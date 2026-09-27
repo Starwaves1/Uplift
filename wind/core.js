@@ -151,7 +151,8 @@ function islandH(x, z) {
     _cr(q[y2 + x0], q[y2 + x1], q[y2 + x2], q[y2 + x3], fu), _cr(q[y3 + x0], q[y3 + x1], q[y3 + x2], q[y3 + x3], fu), fv) * I.step + I.offset;
 }
 // islandH at (x, z) and one stored texel to either side in x and in z, from one 6×6 window of steps (the same Catmull-Rom
-// with the same weights, then scaled, so out[0] is exactly islandH(x, z)) → out = [h, h(x ± dx), h(z ± dx)] in metres
+// with the same weights, then scaled, so out[0] is exactly islandH(x, z)) → out = [h, h(x + dx), h(x − dx), h(z + dx),
+// h(z − dx)] in metres
 const _hcr = [new Float64Array(6), new Float64Array(6), new Float64Array(6)];
 function islandHCross(x, z, out) {
   const I = ISLAND, n = I.n, q = I.q, m = n - 1, [rm, r0, rp] = _hcr, st = I.step, of = I.offset;
@@ -185,9 +186,12 @@ function islandHCross(x, z, out) {
 // Each octave fades out by the LOD's minWave like the rest of the terrain. The finest mesh (LOD 0) is a 2 m grid
 // filtered at minWave 4 m, so the finest geometric octave is 8 m, and JS (collision) always evaluates at that filter:
 // the same height the nearest mesh is built from. Finer relief belongs to the fragment shader: terrainDetailFrag().
+// The coarsest octave (c0) is two stored texels, but never under 32 m: the 8192² island (7.8 m) could hold 16–32 m
+// relief, yet its slopes carry little of it, and with a 16 m top octave the gullies read as fine texture rather than
+// landform. (Once the generator's own rock structure fills that band, ticket 17, the floor can drop to 2 texels.)
 const TDET = (() => {
   const texel = ISLAND ? ISLAND.dx : 16, M = typeof window !== 'undefined' && window.ISLAND_MAPS;
-  return { MINWAVE: 4, c0: Math.pow(2, Math.round(Math.log2(texel * 2))), e: texel, M: M || null, m: [0, 0, 0, 1], r: [0, 0, 0, 1], g: [0, 0, 0] };
+  return { MINWAVE: 4, c0: Math.max(32, Math.pow(2, Math.round(Math.log2(texel * 2)))), e: texel, M: M || null, m: [0, 0, 0, 1], r: [0, 0, 0, 1], g: [0, 0, 0] };
 })();
 // bilinear between texel centres of an RGBA8 island map (n², over the island), clamped at the edges, 0…1 → out
 function islTex(data, n, x, z, out) {
@@ -478,7 +482,7 @@ vec4 islandRegions(vec2 q){ return textureLod(uIslReg, (q - uHeightP.x)*uHeightP
 // ── terrain detail below the stored grid (JS twin: TDET / islTex / gullyOct / terrainDetail in core.js, which explains
 // it): gullies and rills down the fall line, ledges along the bedding, driven by the island's maps ──
 const float TDET_MINWAVE = 4.0; // the finest mesh's filter (LOD 0: a 2 m grid at minWave 2 cells)
-float tdetC0(){ return exp2(round(log2(2.0/uHeightP.y))); } // the coarsest groove cell (m): ~2 stored texels
+float tdetC0(){ return max(32.0, exp2(round(log2(2.0/uHeightP.y)))); } // the coarsest octave (m): 2 stored texels, ≥ 32 m
 // bilinear between texel centres of an island map, clamped at the edges (texelFetch: exact, so JS matches)
 vec4 islTex(sampler2D s, vec2 q){
   int n = max(textureSize(s, 0).x, 1);

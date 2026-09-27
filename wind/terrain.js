@@ -4,10 +4,11 @@ const TERRAIN = (() => {
   const { gl, program, buffer, attribs, env, setEnv } = GLX;
   const N = 32, LEAF = 64, LEVELS = 9, MINH = -120, MAXH = 1350;
   // LOD ranges: a node of level L is drawn out to RK·64·2^L m (scaled by the projection's zoom, and down by the quality
-  // preset's lod factor). Vertex spacing is then a fixed angle: at RK 7 and a 72° field of view a triangle spans 3–7 px
-  // at 1080p (it was 8–17 px at RK 2.8), so 16 m spacing reaches 3.6 km and 32 m 7 km; the shading beyond the 8 m ring
-  // comes from the far-field normal map, at the stored grid's resolution whatever the spacing (view range, ticket 14)
-  const RK = 7.0;
+  // preset's lod factor). Vertex spacing is then a fixed angle: at RK 14 and a 72° field of view a triangle spans ~2–3 px
+  // at 1080p (it was 8–17 px at RK 2.8), so 16 m spacing reaches 7 km and 32 m 14 km (5× the old reach); beyond the 8 m
+  // ring the shading comes from the far-field normal map, at the stored grid's resolution whatever the spacing (view
+  // range, ticket 14)
+  const RK = 14.0;
   const RANGE = new Float64Array(LEVELS);
   for (let L = 0; L < LEVELS; L++) RANGE[L] = LEAF * Math.pow(2, L) * RK;
 
@@ -546,7 +547,7 @@ void main(){
   })();
 
   // ── tile cache: each CDLOD node's 33×33 heights (plus a 1-texel border for normals) evaluated once into an atlas ──
-  const SLOT = 35, ATLAS = 2048, PER = Math.floor(ATLAS / SLOT), NSLOT = PER * PER, UNIT_HC = 6;
+  const SLOT = 35, ATLAS = 3072, PER = Math.floor(ATLAS / SLOT), NSLOT = PER * PER, UNIT_HC = 6; // 7569 tiles
   const hcTex = gl.createTexture();
   gl.bindTexture(gl.TEXTURE_2D, hcTex);
   gl.texStorage2D(gl.TEXTURE_2D, 1, gl.RG32F, ATLAS, ATLAS);
@@ -605,7 +606,11 @@ void main(){
   const slotOf = new Map(), slotKey = new Float64Array(NSLOT).fill(-1), slotFrame = new Int32Array(NSLOT).fill(-1), freeSlots = [];
   for (let i = NSLOT - 1; i >= 0; i--) freeSlots.push(i);
   let frameNo = 0, genN = 0;
-  function evictSlot() { // least recently used, never one already claimed this frame
+  function evictSlot() {
+    // reclaim every tile unused for 8+ frames in one pass (one scan of all slots per eviction was the cost in flight)…
+    for (let i = 0; i < NSLOT; i++) if (slotFrame[i] < frameNo - 8 && slotKey[i] >= 0) { slotOf.delete(slotKey[i]); slotKey[i] = -1; freeSlots.push(i); }
+    if (freeSlots.length) return freeSlots.pop();
+    // …else the least recently used, never one already claimed this frame
     let best = -1, bf = 0x7fffffff;
     for (let i = 0; i < NSLOT; i++) if (slotFrame[i] < bf && slotFrame[i] !== frameNo) { bf = slotFrame[i]; best = i; }
     slotOf.delete(slotKey[best]);
@@ -823,9 +828,49 @@ void main(){
       planes[p * 4 + 3] = m[15] + sgn * m[12 + row];
     }
   }
+  // Each node's height range, from a min/max pyramid of the island's samples (Int16, metres rounded outward, blocks of
+  // 4 samples and up): the frustum test uses it instead of the whole world's range (fewer nodes, most of all in the
+  // shadow cascades' tight boxes), and sea floor more than SEA_CUT deep isn't subdivided further — under that much water
+  // it's invisible (and so are the cracks against finer neighbours)
+  const SEA_CUT = -40, HMARGIN = 12;
+  const HP = (() => {
+    if (typeof ISLAND === 'undefined' || !ISLAND) return null;
+    const n = ISLAND.n, h = ISLAND.h, lv = [];
+    let w = n >> 2, lo = new Int16Array(w * w), hi = new Int16Array(w * w);
+    for (let b = 0; b < w; b++) for (let a = 0; a < w; a++) {
+      let mn = 1e9, mx = -1e9;
+      for (let y = b * 4; y < b * 4 + 4; y++) for (let x = a * 4, o = y * n; x < a * 4 + 4; x++) { const v = h[o + x]; if (v < mn) mn = v; if (v > mx) mx = v; }
+      lo[b * w + a] = Math.floor(mn) - HMARGIN; hi[b * w + a] = Math.ceil(mx) + HMARGIN;
+    }
+    lv[2] = [lo, hi, w];
+    for (let l = 3; w > 1; l++) {
+      const w2 = w >> 1, lo2 = new Int16Array(w2 * w2), hi2 = new Int16Array(w2 * w2);
+      for (let b = 0; b < w2; b++) for (let a = 0; a < w2; a++) {
+        const i = b * 2 * w + a * 2;
+        lo2[b * w2 + a] = Math.min(lo[i], lo[i + 1], lo[i + w], lo[i + w + 1]); hi2[b * w2 + a] = Math.max(hi[i], hi[i + 1], hi[i + w], hi[i + w + 1]);
+      }
+      lo = lo2; hi = hi2; w = w2; lv[l] = [lo, hi, w];
+    }
+    return { lv, n, inv: ISLAND.inv, origin: ISLAND.origin };
+  })();
+  const hr = [MINH, MAXH];
+  function nodeRange(x, z, s) { // → hr = [min, max] of the ground under the node (with margins)
+    if (!HP) { hr[0] = MINH; hr[1] = MAXH; return hr; }
+    const n = HP.n, a0 = Math.max(0, Math.floor((x - HP.origin) * HP.inv) - 1), a1 = Math.min(n - 1, Math.ceil((x + s - HP.origin) * HP.inv) + 1);
+    const b0 = Math.max(0, Math.floor((z - HP.origin) * HP.inv) - 1), b1 = Math.min(n - 1, Math.ceil((z + s - HP.origin) * HP.inv) + 1);
+    // outside the data the ground is its edge's (terrainH clamps): the clamped indices already say so
+    const A0 = Math.min(a0, n - 1), A1 = Math.max(a1, 0), B0 = Math.min(b0, n - 1), B1 = Math.max(b1, 0);
+    let l = 2;
+    while (l < HP.lv.length - 1 && ((A1 >> l) - (A0 >> l) > 1 || (B1 >> l) - (B0 >> l) > 1)) l++;
+    const [lo, hi, w] = HP.lv[l];
+    let mn = 1e9, mx = -1e9;
+    for (let b = B0 >> l; b <= B1 >> l; b++) for (let a = A0 >> l; a <= A1 >> l; a++) { const i = b * w + a; if (lo[i] < mn) mn = lo[i]; if (hi[i] > mx) mx = hi[i]; }
+    hr[0] = mn; hr[1] = mx;
+    return hr;
+  }
   let cx = 0, cy = 0, cz = 0;
   function visible(x, z, s) {
-    const x0 = x - cx, x1 = x0 + s, z0 = z - cz, z1 = z0 + s, y0 = MINH - cy, y1 = MAXH - cy;
+    const x0 = x - cx, x1 = x0 + s, z0 = z - cz, z1 = z0 + s, y0 = hr[0] - cy, y1 = hr[1] - cy; // hr: nodeRange() just before
     for (let p = 0; p < 6; p++) {
       const a = planes[p * 4], b = planes[p * 4 + 1], c = planes[p * 4 + 2], d = planes[p * 4 + 3];
       if (a * (a > 0 ? x1 : x0) + b * (b > 0 ? y1 : y0) + c * (c > 0 ? z1 : z0) + d < 0) return false;
@@ -843,8 +888,9 @@ void main(){
   function select(x, z, s, L) {
     const d = boxDist(x, z, s);
     if (d > RANGE[L]) return false;
+    nodeRange(x, z, s);
     if (!visible(x, z, s)) return true;
-    if (L === 0 || d > RANGE[L - 1]) { add(lists[0], x, z, s, L); return true; }
+    if (L === 0 || d > RANGE[L - 1] || hr[1] < SEA_CUT) { add(lists[0], x, z, s, L); return true; }
     const h = s / 2;
     for (let q = 0; q < 4; q++) {
       const qx = x + (q & 1) * h, qz = z + (q >> 1) * h;
@@ -868,7 +914,7 @@ void main(){
     const rx = Math.floor(cx / RS), rz = Math.floor(cz / RS);
     for (let i = -1; i <= 1; i++) for (let j = -1; j <= 1; j++) {
       const x = (rx + i) * RS, z = (rz + j) * RS;
-      if (!select(x, z, RS, LEVELS - 1) && visible(x, z, RS)) add(lists[0], x, z, RS, LEVELS - 1);
+      if (!select(x, z, RS, LEVELS - 1) && (nodeRange(x, z, RS), visible(x, z, RS))) add(lists[0], x, z, RS, LEVELS - 1);
     }
     lodScale = 1;
     return count;

@@ -25,7 +25,8 @@ import argparse, base64, ctypes, json, os, re, shutil, socket, struct, subproces
 
 TOOLS = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(TOOLS)
-DEFAULT_URL = 'http://127.0.0.1:8765/windborne-test.html'
+# the main checkout's newest full test build (its windborne-test.html predates ?fly / ?at / ?island)
+DEFAULT_URL = 'http://127.0.0.1:8765/windborne-test-flora,fauna,glider,landmarks,windfx.html'
 BROWSERS = {
     'chrome': [r'C:\Program Files\Google\Chrome\Application\chrome.exe',
                r'C:\Program Files (x86)\Google\Chrome\Application\chrome.exe',
@@ -210,7 +211,7 @@ BRIDGE = r"""
   HB.checkUrl = async () => {
     const q = new URLSearchParams(location.search), isl = q.get('island'), at = q.get('at'), fly = q.has('fly'), bad = [];
     if (isl && !performance.getEntriesByType('resource').some(e => e.name.includes(`islands/${isl}/island.bin`) && e.responseStatus === 200))
-      bad.push(`?island=${isl} (islands/${isl}/island.bin not loaded)`);
+      throw new Error(`islands/${isl}/island.bin didn't load: a typo, or a server without islands/ (a worktree has only the default island)`);
     const island = typeof ISLAND !== 'undefined' && ISLAND;
     if (at && !island) bad.push(`?at=${at} (no island loaded)`);
     else if (at) { // the spectator camera (?fly) or the glider starts at the spot
@@ -223,7 +224,7 @@ BRIDGE = r"""
       const c = FLIGHT.cam.pos;
       if (Math.hypot(c[0] - p0[0], c[1] - p0[1], c[2] - p0[2]) > 0.01) bad.push('?fly');
     }
-    if (bad.length) throw new Error(`this page ignored ${bad.join(', ')}: is it an old build? Rebuild it (sh build-wind.sh ...) or pick another with --url`);
+    if (bad.length) throw new Error(`this page ignored ${bad.join(', ')}: an old build? Rebuild it (sh build-wind.sh ...) or pick another with --url`);
   };
   // wait for the game (and its photo ground materials), pump the loading frames; play: take flight in the glider
   HB.ready = async ({ play = false, materials = true, timeout = 60000 } = {}) => {
@@ -524,8 +525,8 @@ def save_png(outdir, name, data):
 # ── spots and URLs ──
 def parse_at(s):
     v = [float(x) for x in re.split(r'[,\s]+', s.strip()) if x]
-    if not 2 <= len(v) <= 4:
-        raise ValueError(f'want X,Y[,HEADING[,ALT]], got {s!r}')
+    if not 2 <= len(v) <= 4 or len(v) == 4 and v[3] <= 0:
+        raise SystemExit(f'--at: want X,Y[,HEADING[,ALT > 0]], got {s!r}')
     return ','.join(f'{x:g}' for x in v)
 
 
@@ -622,7 +623,7 @@ def cmd_shot(b, args):
 def cmd_run(b, args):
     spots = spots_from(args)
     if len(spots) > 1:
-        raise SystemExit('run takes one spot (use shot for several, or R.view in --js)')
+        raise SystemExit('run takes one spot (use shot for several, or R.view in --js with --glider)')
     url = page_url(args.url, spots[0][1] if spots else None, args.island, args.glider)
     info = load(b, args, url, args.js)
     for e in args.expr or []:

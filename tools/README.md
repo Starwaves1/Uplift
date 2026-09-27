@@ -24,17 +24,16 @@ actual cursor."
 
 ### Which page
 
-`--url` takes a URL (default `http://127.0.0.1:8765/windborne-test.html`, the main checkout's static server) **or a
+`--url` takes a URL (default `http://127.0.0.1:8765/windborne-test-flora,fauna,glider,landmarks,windfx.html`, on the main checkout's static server) **or a
 path**. A path like `windborne-test.html` is served from `--root` (default: the checkout the tool is in) on a private
 port for the length of the run. Use a path to review your own worktree's build without starting a server:
 
     sh build-wind.sh                     # writes windborne-test.html (+ windborne.html) in your worktree
     py tools/headless.py shot --url windborne-test.html --at 29,43.5,215,450 --name mine
 
-Always load a muted `windborne-test*.html` build. Check that the build is current. In the main checkout, the only
-up-to-date test build (with the photo materials) is currently
-`windborne-test-flora,fauna,glider,landmarks,windfx.html`; `windborne-test.html` there is stale until someone runs
-`sh build-wind.sh`. A build older than `?fly` / `?at` / `?island` would quietly show the title flyby instead of
+Always load a muted `windborne-test*.html` build. Check that the build is current. In the main checkout, the newest
+full test build (the default) is currently `windborne-test-flora,fauna,glider,landmarks,windfx.html`; `windborne-test.html` there
+predates `?fly` / `?at` / `?island`. A build older than `?fly` / `?at` / `?island` would quietly show the title flyby instead of
 your spot, so the tool checks that the page honoured them (the camera is at the spot and holds still, the island's
 `island.bin` loaded) and stops with "this page ignored …" if not. Serving a path from a worktree only has the
 tracked default island; for `--island NAME`, use the main checkout's server, which has `islands/`.
@@ -61,7 +60,7 @@ glider there instead. Shots go to `shots/` (git-ignored) unless you pass `--out`
     # before/after: A is --url/--island/--js, B changes one of them. Saves <name>_a.png, <name>_b.png and sbs_<name>.jpg
     py tools/headless.py pair --at 27.5,22,225,550 --name mat --b-js "TERRAIN.materials = false" --labels "materials on" "materials off"
     py tools/headless.py pair --at 15.6,12.4,168,250 --name fjord --island fjord1 --b-island fjord2
-    py tools/headless.py pair --at 29,43.5,215,450 --name build --url windborne-test.html --b-url http://127.0.0.1:8765/windborne-test.html
+    py tools/headless.py pair --at 29,43.5,215,450 --name build --url windborne-test.html --b-url http://127.0.0.1:8765/windborne-test-flora,fauna,glider,landmarks,windfx.html
 
     # JavaScript: --js steps run after the game is ready, then --settle frames; --expr values print as JSON
     py tools/headless.py run --at 29,43.5,215,450 --js "WB.PROF.on = true" --expr "WB.PROF.report()" --expr "WB.settings"

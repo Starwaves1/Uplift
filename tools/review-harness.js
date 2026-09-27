@@ -35,7 +35,8 @@ R.ready = async () => {
 R.centre = () => window.dispatchEvent(new MouseEvent('mousemove', { clientX: innerWidth / 2, clientY: innerHeight / 2 }));
 R.view = async (xk, yk, deg, agl, frames = 120) => {
   R.centre();
-  FLIGHT.spawn(xk * 1000 + ISLAND.origin, yk * 1000 + ISLAND.origin, deg * Math.PI / 180, agl);
+  const o = ISLAND ? ISLAND.origin : -32000; // -32000: the procedural world's, when no island loaded
+  FLIGHT.spawn(xk * 1000 + o, yk * 1000 + o, deg * Math.PI / 180, agl);
   FLIGHT.g.invuln = 99;
   await R.pump(frames);
   return Array.from(FLIGHT.g.pos).map(Math.round);

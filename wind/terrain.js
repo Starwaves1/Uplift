@@ -184,25 +184,29 @@ const mat2 MROT = mat2(0.8, 0.6, -0.6, 0.8);
 float lumi(vec3 c){ return dot(c, vec3(0.2126, 0.7152, 0.0722)); }
 // the scan's slope along its own axes from the tangent normal: (dh/du, dh/dv) with v running down the image
 vec2 tslope(vec2 rg){ vec2 t = rg*2.0 - 1.0; return vec2(-t.x, t.y)/sqrt(max(1.0 - dot(t, t), 0.09)); }
-float matFar; // per pixel, 0 near … 0.65 far (0.6 at ~2.2 km): how far the scans' own contrast has faded toward their average
+float matFar; // per pixel, 0 near … 0.65 far (0.6 at ~2.2 km): past 0.6 rock faces take one scan instead of two
 // a layer seen from above at p (m), tiles k× their true size: linear albedo, world slope (dh/dx, dh/dz), height 0…1.
 // Two lookups — the tile, and a copy rotated ~37° and 1.37× larger — swapped every half tile or so by a noise and by
 // their own heights, so even a 15 m scan doesn't repeat as a grid; far off, the scan's contrast fades toward its average
 // (its last mip), and the broad variation laid on top carries the land instead
+float matFp;  // per pixel: its footprint on the ground (m)
 void matTop(int L, vec2 p, float k, out vec3 a, out vec2 g, out float h){
   float t = TILE[L]*k, l = float(L);
-  if (matFar >= 0.6) {       // beyond ~2 km a tile is a few pixels across: one lookup, no relief
+  // once a tile spans only a few pixels its pattern can only repeat or shimmer: its contrast gives way to its average
+  // colour (the last mip) — a 90 m aerial scan keeps its structure for kilometres, a 10 m scree tile loses it soon
+  float fade = smoothstep(48.0, 4.0, t/matFp)*0.85;
+  if (fade >= 0.5) {         // tiles under ~22 px across: one lookup, no relief
     vec3 u = vec3(p/t, l);
-    a = mix(texture(uMatC, u).rgb, textureLod(uMatC, u, 10.0).rgb, matFar); h = texture(uMatN, u).b; g = vec2(0.0);
+    a = mix(texture(uMatC, u).rgb, textureLod(uMatC, u, 10.0).rgb, fade); h = texture(uMatN, u).b; g = vec2(0.0);
     return;
   }
   vec3 u1 = vec3(p/t, l), u2 = vec3(MROT*(p/(t*1.37)) + vec2(0.31, 0.77), l);
   vec3 n1 = texture(uMatN, u1).rgb, n2 = texture(uMatN, u2).rgb;
   float b = smoothstep(0.25, 0.75, vn(p/(t*0.61) + vec2(l*7.1, 3.3))*0.7 + vn(p/(t*2.3) + vec2(1.7, l))*0.3 + (n2.b - n1.b)*0.6);
   a = mix(texture(uMatC, u1).rgb, texture(uMatC, u2).rgb, b);
-  if (matFar > 0.0) a = mix(a, textureLod(uMatC, u1, 10.0).rgb, matFar);
+  if (fade > 0.0) a = mix(a, textureLod(uMatC, u1, 10.0).rgb, fade);
   h = mix(n1.b, n2.b, b);
-  g = mix(tslope(n1.rg), transpose(MROT)*tslope(n2.rg), b)*(1.0 - matFar);
+  g = mix(tslope(n1.rg), transpose(MROT)*tslope(n2.rg), b)*(1.0 - fade);
 }
 // a layer on steep ground: projected along the three world axes (the faces upright: image-up is world-up) and blended
 // by the normal, so nothing stretches down a wall. Returns the albedo, the normal with the layer's relief, the height
@@ -249,11 +253,14 @@ void main(){
   // procedural texture filtering: each octave fades out as its features approach the size of a pixel
   float fp = max(length(fwidth(wp.xz)), 1e-3);
   // ── materials: the landform decides what grows and what settles where ──
-  float alt = vH + (vVar - 0.5)*70.0;                          // altitude, noised so zones don't follow contour lines
-  // enclosure (vCurv) runs about ±0.03 in the lowlands, ±0.1 in the mountains (±0.3–0.5 at the extremes): soft
-  // thresholds for moisture, firm ones for gullies (snow, scree) and crests (bare, wind-scoured rock)
-  float hollow = smoothstep(0.005, 0.1, vCurv), ridgeC = smoothstep(0.005, 0.12, -vCurv);
-  float gully = smoothstep(0.1, 0.32, vCurv), crest = smoothstep(0.12, 0.45, -vCurv);
+  // the ground's height and enclosure per pixel: the tile cache's per-vertex values near the camera, the far-field maps
+  // where its cells are coarse (view range, ticket 14), so far off every zone follows the ground, not the tiles
+  float hS = groundHeight(wp, vH, fp, 300.0), cS = groundCurv(wp, vCurv);
+  float alt = hS + (vVar - 0.5)*70.0;                          // altitude, noised so zones don't follow contour lines
+  // enclosure runs about ±0.03 in the lowlands, ±0.1 in the mountains (±0.3–0.5 at the extremes): soft thresholds for
+  // moisture, firm ones for gullies (snow, scree) and crests (bare, wind-scoured rock)
+  float hollow = smoothstep(0.005, 0.1, cS), ridgeC = smoothstep(0.005, 0.12, -cS);
+  float gully = smoothstep(0.1, 0.32, cS), crest = smoothstep(0.12, 0.45, -cS);
   float moist = clamp(0.55 + hollow*0.6 - ridgeC*0.45 - vDry*0.75 + (vVar2 - 0.5)*0.4 - smoothstep(300.0, 700.0, alt)*0.15, 0.0, 1.0);
   // meadows: lush in valleys and hollows, sun-dried gold on ridges and in the dry country, olive turf up high
   vec3 lush = mix(vec3(0.30,0.56,0.20), vec3(0.22,0.46,0.18), smoothstep(0.5, 0.85, vVar2));
@@ -277,18 +284,14 @@ void main(){
   col = mix(col, rock, rk);
   // snow: above a snow line that drops in gullies and on slopes turned from the (midday) sun and rises on wind-scoured
   // crests. It lies on ground up to about 50° and collects in gullies a little below the line; a per-pixel noise rags
-  // its edges
-  // ── view range (ticket 14): a minimal, marked switch for the materials session to adopt — the snow's height,
-  // enclosure and normal per pixel (groundHeight/groundCurv/groundNormal), so far off the snow line follows the ground
-  // instead of the tile cache's coarse cells (square snow patches on distant peaks) ──
-  float hS = groundHeight(wp, vH, fp, 450.0), cS = groundCurv(wp, vCurv); // (no snow lies below ~590 m)
-  float gullyS = smoothstep(0.1, 0.32, cS), crestS = smoothstep(0.12, 0.45, -cS);
+  // its edges. Height, enclosure and normal are the per-pixel ground's (above), so far off the snow line follows the
+  // ground rather than the tile cache's coarse cells
   float shaded = 1.0 - clamp(dot(n, vec3(0.31, 0.55, -0.78))*1.4, 0.0, 1.0);
   float rag = vn(wp.xz/23.0 + vec2(3.3, 8.8)) - 0.5 + (vn(wp.xz/7.0 + vec2(1.2, 5.4)) - 0.5)*0.5*(1.0 - smoothstep(1.0, 4.0, fp));
-  float line = SNOWLINE - 170.0*gullyS + 130.0*crestS - 170.0*shaded + (vVar - 0.5)*220.0 + vDry*300.0 + rag*70.0;
+  float line = SNOWLINE - 170.0*gully + 130.0*crest - 170.0*shaded + (vVar - 0.5)*220.0 + vDry*300.0 + rag*70.0;
   float lies = smoothstep(0.42, 0.26, slope + rag*0.08);
   float sn = smoothstep(line - 40.0, line + 50.0, hS)*lies;
-  sn = max(sn, smoothstep(0.3, 0.7, gullyS + rag*0.3)*smoothstep(line - 240.0, line - 90.0, hS)*lies);
+  sn = max(sn, smoothstep(0.3, 0.7, gully + rag*0.3)*smoothstep(line - 240.0, line - 90.0, hS)*lies);
   col = mix(col, vec3(0.95,0.96,0.98), sn);
   if (vH < 0.0) col = mix(vec3(0.62,0.6,0.48), vec3(0.3,0.33,0.28), smoothstep(0.0, 14.0, -vH)); // sand to silt: the water's absorption tints it
   float grass = (1.0-rk)*(1.0-sn)*(1.0-scree)*(1.0-vForest*0.8)*smoothstep(2.0, 6.0, vH);
@@ -301,7 +304,7 @@ void main(){
   if (mats) {
     vec4 im = islandMaps(wp.xz), rg = islandRegions(wp.xz);   // flow, sediment, scree, cliff; Nordic, Med, plateau, volcano
     float nord = rg.x, med = rg.y, plat = rg.z, volc = rg.w, alp = clamp(1.0 - nord - med - plat - volc, 0.0, 1.0);
-    matFar = smoothstep(400.0, 2500.0, dist)*0.65;
+    matFar = smoothstep(400.0, 2500.0, dist)*0.65; matFp = fp;
     float wSnow = sn;
     // bare rock: the landform's, the island's cliffs, and the thin-soiled Nordic granite on moderate slopes and knolls
     float wRock = max(max(rk, smoothstep(0.35, 0.8, im.a)), nord*smoothstep(0.36, 0.56, slope + ridgeC*0.25))*(1.0 - wSnow);

@@ -3,8 +3,12 @@
 const TERRAIN = (() => {
   const { gl, program, buffer, attribs, env, setEnv } = GLX;
   const N = 32, LEAF = 64, LEVELS = 9, MINH = -120, MAXH = 1350;
-  // LOD ranges: a node of level L is drawn out to RK·64·2^L m (scaled down by the quality preset's lod factor)
-  const RK = 2.8;
+  // LOD ranges: a node of level L is drawn out to RK·64·2^L m (scaled by the projection's zoom, and down by the quality
+  // preset's lod factor). Vertex spacing is then a fixed angle: at RK 14 and a 72° field of view a triangle spans ~2–3 px
+  // at 1080p (it was 8–17 px at RK 2.8), so 16 m spacing reaches 7 km and 32 m 14 km (5× the old reach); beyond the 8 m
+  // ring the shading comes from the far-field normal map, at the stored grid's resolution whatever the spacing (view
+  // range, ticket 14)
+  const RK = 14.0;
   const RANGE = new Float64Array(LEVELS);
   for (let L = 0; L < LEVELS; L++) RANGE[L] = LEAF * Math.pow(2, L) * RK;
 
@@ -49,6 +53,7 @@ layout(location=1) in vec4 aNode;
 layout(location=2) in vec2 aSlot;
 uniform mat4 uVP; uniform highp sampler2D uHC; uniform sampler2D uHM; uniform float uRangeK;
 out vec3 vRel; out vec3 vN; out float vH; out float vForest; out float vVar; out float vVar2; out float vCurv; out float vDry;
+out float vLod;
 void main(){
   float cell = aNode.z / 32.0;
   vec2 wp = aNode.xy + aGrid*cell;
@@ -73,9 +78,53 @@ void main(){
   vVar = vn(wp*0.004 + vec2(5.5, 2.5));
   vVar2 = vn(wp*0.021 + vec2(1.5, 8.5));
   vRel = vec3(wp.x - uCam.x, h - uCam.y, wp.y - uCam.z);
+  vLod = aNode.w + k;
   gl_Position = uVP*vec4(vRel, 1.0);
 }`;
-  const TFS = GLSL_COMMON + `
+  // The ground's shading normal (view range, ticket 14): the mesh's own vertex normals near the camera (finer than the
+  // stored grid, with the micro-relief); from the 8 m ring outward, where the mesh is coarser than the grid, the island's
+  // far-field normal map (below), filtered by the pixel's footprint — distant ground is lit with every ridge and gully
+  // the heightfield has, however coarse the mesh there. vLod: the node's LOD plus its morph (continuous across rings).
+  // The same map carries the ground's enclosure (hollow > 0, ridge < 0, at a ~31 m scale, like the tile cache's fine
+  // LODs); mip-filtered it's the enclosure of the ground smoothed to the pixel's footprint. groundHeight/groundCurv/
+  // groundNormal give the per-pixel ground for the materials: the tile cache's per-vertex vH/vCurv/vN near the camera,
+  // the far-field maps (smooth across tiles and LOD seams) where the cache's cells are coarse.
+  const TFAR = `
+in float vLod; uniform sampler2D uFarN;
+float farT(){ return uHeightP.w > 0.5 ? smoothstep(1.6, 2.8, vLod) : 0.0; }  // 0 mesh near … 1 far-field maps
+vec3 groundNormal(vec3 wp, vec3 nv){
+  vec2 e = texture(uFarN, (wp.xz - uHeightP.x)*uHeightP.y/uHeightP.z).rg*2.0 - 1.0;
+  return normalize(mix(nv, vec3(e.x, sqrt(max(1.0 - dot(e, e), 0.0)), e.y), farT()));
+}
+float groundCurv(vec3 wp, float vc){
+  float e = texture(uFarN, (wp.xz - uHeightP.x)*uHeightP.y/uHeightP.z).b - 0.5;   // stored ×2, as ±0.5 → ±1
+  return mix(vc, e, farT());
+}
+// (the stored heights by hand-filtered pyramid, hmLod: 4-8 fetches, so only where it matters — the callers pass the
+// pixel footprint fp and the lowest height they care about)
+float groundHeight(vec3 wp, float vh, float fp, float above){
+  float t = farT();
+  if (t <= 0.0 || vh < above) return vh;
+  return mix(vh, hmLod(wp.xz, max(log2(fp*uHeightP.y), 0.0)), t);
+}
+// Meadow flowers seen from afar: the near grass (flora) puts wildflowers in patches (vn at 0.045/m) whose species follow
+// broader zones (vn at 0.018/m: daisy, buttercup, poppy, cornflower); past the instanced flowers' reach (~200 m) the
+// same patches carry on as colour on the linear albedo, stronger at grazing angles where the heads stand above the grass
+vec3 meadowFlowers(vec3 col, vec3 wp, vec3 n, float dist, float meadow, float forest){
+  vec2 p = wp.xz;
+  float fp = length(fwidth(p));
+  float w = meadow*smoothstep(140.0, 220.0, dist)*clamp(1.0 - 1.8*forest, 0.0, 1.0)*smoothstep(0.78, 0.84, n.y)
+          *smoothstep(3.0, 5.0, wp.y)*(1.0 - smoothstep(560.0, 630.0, wp.y));
+  if (w < 0.005) return col;
+  float pat = mix(smoothstep(0.5, 0.78, vn(p*0.045 + vec2(3.3, 7.7))), 0.22, smoothstep(6.0, 25.0, fp)); // its mean, once a patch is under a few pixels
+  float g = vn(p*0.018 + vec2(9.1, 1.7))*0.8;   // the species threshold, jittered ±0.2 per plant: the mix of each zone
+  float p1 = clamp((0.34 - g)/0.2, 0.0, 1.0), p2 = clamp((0.5 - g)/0.2, 0.0, 1.0), p3 = clamp((0.62 - g)/0.2, 0.0, 1.0);
+  vec3 fc = toLin(vec3(0.98, 0.97, 0.93))*p1 + toLin(vec3(1.0, 0.84, 0.16))*(p2 - p1) + toLin(vec3(0.92, 0.2, 0.12))*(p3 - p2)
+          + toLin(vec3(0.46, 0.36, 0.95))*(1.0 - p3);
+  float graze = 1.0 - abs(normalize(wp - uCam).y);
+  return mix(col, fc, (pat*0.5 + 0.03)*(0.05 + 0.13*graze)*w);
+}`;
+  const TFS = GLSL_COMMON + TFAR + `
 in vec3 vRel; in vec3 vN; in float vH; in float vForest; in float vVar; in float vVar2; in float vCurv; in float vDry;
 uniform vec3 uG, uGR, uGF, uGV; uniform float uGAgl, uDetail;
 const float SNOWLINE = 1350.0; // m
@@ -193,7 +242,7 @@ float gliderShadow(vec3 wp){
   return m*(1.0 - smoothstep(40.0, 420.0, t));
 }
 void main(){
-  vec3 n = normalize(vN);
+  vec3 n = groundNormal(vRel + uCam, normalize(vN));
   vec3 wp = vRel + uCam;
   float dist = length(vRel);
   float slope = 1.0 - n.y;
@@ -229,12 +278,17 @@ void main(){
   // snow: above a snow line that drops in gullies and on slopes turned from the (midday) sun and rises on wind-scoured
   // crests. It lies on ground up to about 50° and collects in gullies a little below the line; a per-pixel noise rags
   // its edges
-  float shaded = 1.0 - clamp(dot(normalize(vN), vec3(0.31, 0.55, -0.78))*1.4, 0.0, 1.0);
+  // ── view range (ticket 14): a minimal, marked switch for the materials session to adopt — the snow's height,
+  // enclosure and normal per pixel (groundHeight/groundCurv/groundNormal), so far off the snow line follows the ground
+  // instead of the tile cache's coarse cells (square snow patches on distant peaks) ──
+  float hS = groundHeight(wp, vH, fp, 450.0), cS = groundCurv(wp, vCurv); // (no snow lies below ~590 m)
+  float gullyS = smoothstep(0.1, 0.32, cS), crestS = smoothstep(0.12, 0.45, -cS);
+  float shaded = 1.0 - clamp(dot(n, vec3(0.31, 0.55, -0.78))*1.4, 0.0, 1.0);
   float rag = vn(wp.xz/23.0 + vec2(3.3, 8.8)) - 0.5 + (vn(wp.xz/7.0 + vec2(1.2, 5.4)) - 0.5)*0.5*(1.0 - smoothstep(1.0, 4.0, fp));
-  float line = SNOWLINE - 170.0*gully + 130.0*crest - 170.0*shaded + (vVar - 0.5)*220.0 + vDry*300.0 + rag*70.0;
+  float line = SNOWLINE - 170.0*gullyS + 130.0*crestS - 170.0*shaded + (vVar - 0.5)*220.0 + vDry*300.0 + rag*70.0;
   float lies = smoothstep(0.42, 0.26, slope + rag*0.08);
-  float sn = smoothstep(line - 40.0, line + 50.0, vH)*lies;
-  sn = max(sn, smoothstep(0.3, 0.7, gully + rag*0.3)*smoothstep(line - 240.0, line - 90.0, vH)*lies);
+  float sn = smoothstep(line - 40.0, line + 50.0, hS)*lies;
+  sn = max(sn, smoothstep(0.3, 0.7, gullyS + rag*0.3)*smoothstep(line - 240.0, line - 90.0, hS)*lies);
   col = mix(col, vec3(0.95,0.96,0.98), sn);
   if (vH < 0.0) col = mix(vec3(0.62,0.6,0.48), vec3(0.3,0.33,0.28), smoothstep(0.0, 14.0, -vH)); // sand to silt: the water's absorption tints it
   float grass = (1.0-rk)*(1.0-sn)*(1.0-scree)*(1.0-vForest*0.8)*smoothstep(2.0, 6.0, vH);
@@ -456,6 +510,7 @@ void main(){
   }
   // scene-linear lighting: sun (grass blades scatter a little light past the terminator), sky dome, sunlit-ground bounce
   if (!mats) col = toLin(col);
+  col = meadowFlowers(col, wp, n, dist, grass, vForest); // view range: the wildflower patches as colour past ~200 m
   float gw = grass*0.15;
   float diff = clamp((dot(n, uSun) + gw)/(1.0 + gw), 0.0, 1.0);
   float casc;
@@ -508,7 +563,7 @@ void main(){
   })();
 
   // ── tile cache: each CDLOD node's 33×33 heights (plus a 1-texel border for normals) evaluated once into an atlas ──
-  const SLOT = 35, ATLAS = 2048, PER = Math.floor(ATLAS / SLOT), NSLOT = PER * PER, UNIT_HC = 6;
+  const SLOT = 35, ATLAS = 3072, PER = Math.floor(ATLAS / SLOT), NSLOT = PER * PER, UNIT_HC = 6; // 7569 tiles
   const hcTex = gl.createTexture();
   gl.bindTexture(gl.TEXTURE_2D, hcTex);
   gl.texStorage2D(gl.TEXTURE_2D, 1, gl.RG32F, ATLAS, ATLAS);
@@ -567,7 +622,11 @@ void main(){
   const slotOf = new Map(), slotKey = new Float64Array(NSLOT).fill(-1), slotFrame = new Int32Array(NSLOT).fill(-1), freeSlots = [];
   for (let i = NSLOT - 1; i >= 0; i--) freeSlots.push(i);
   let frameNo = 0, genN = 0;
-  function evictSlot() { // least recently used, never one already claimed this frame
+  function evictSlot() {
+    // reclaim every tile unused for 8+ frames in one pass (one scan of all slots per eviction was the cost in flight)…
+    for (let i = 0; i < NSLOT; i++) if (slotFrame[i] < frameNo - 8 && slotKey[i] >= 0) { slotOf.delete(slotKey[i]); slotKey[i] = -1; freeSlots.push(i); }
+    if (freeSlots.length) return freeSlots.pop();
+    // …else the least recently used, never one already claimed this frame
     let best = -1, bf = 0x7fffffff;
     for (let i = 0; i < NSLOT; i++) if (slotFrame[i] < bf && slotFrame[i] !== frameNo) { bf = slotFrame[i]; best = i; }
     slotOf.delete(slotKey[best]);
@@ -588,8 +647,10 @@ void main(){
   }
   const GEN_CAPS = [gl.DEPTH_TEST, gl.CULL_FACE, gl.BLEND, gl.POLYGON_OFFSET_FILL];
   // evaluate the queued tiles (one instanced draw), leaving every piece of GL state as it was
+  // (the colour mask isn't queried: getParameter(COLOR_WRITEMASK) is a synchronous round trip to the GPU process, ~2 ms
+  // in Chrome, and tiles are generated most frames in flight. The shadow casters write no colour; everything else does.)
   function generate() {
-    const fb = gl.getParameter(gl.FRAMEBUFFER_BINDING), vp = gl.getParameter(gl.VIEWPORT), cm = gl.getParameter(gl.COLOR_WRITEMASK);
+    const fb = gl.getParameter(gl.FRAMEBUFFER_BINDING), vp = gl.getParameter(gl.VIEWPORT), cmOn = !env.shadowPass;
     const prog = gl.getParameter(gl.CURRENT_PROGRAM);
     const st = GEN_CAPS.map(c => gl.isEnabled(c));
     gl.bindFramebuffer(gl.FRAMEBUFFER, hcFbo); gl.viewport(0, 0, ATLAS, ATLAS);
@@ -601,9 +662,47 @@ void main(){
     gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, genN);
     stats.generated += genN; genN = 0;
     gl.bindFramebuffer(gl.FRAMEBUFFER, fb); gl.viewport(vp[0], vp[1], vp[2], vp[3]);
-    gl.colorMask(cm[0], cm[1], cm[2], cm[3]);
+    gl.colorMask(cmOn, cmOn, cmOn, cmOn);
     GEN_CAPS.forEach((c, i) => (st[i] ? gl.enable(c) : gl.disable(c)));
     gl.useProgram(prog);
+  }
+
+  // ── far-field maps (see TFAR): the heightfield's normals at its stored resolution (central differences — the
+  // Catmull-Rom surface's own slope at each sample) and its enclosure, with a full mip chain and anisotropic filtering.
+  // Built once on the GPU. RGBA8: the unit normal's x and z; the enclosure ×2 (the tile cache's definition at a 31 m
+  // scale: how far the ground 2 cells around rises above this spot, per metre, on heights smoothed a cell's worth).
+  // Parked on its own texture unit ──
+  const UNIT_FN = 19;
+  if (typeof ISLAND !== 'undefined' && ISLAND) {
+    // at most 4096² (15.6 m texels over the island: 85 MB with mips; the stored grid may be finer, 7.8 m at 8192², but
+    // the map only takes over from the 8 m ring, where the mesh's own heights are smoothed to 16 m)
+    const n = Math.min(ISLAND.n, 4096), t = gl.createTexture(), fb = gl.createFramebuffer(), vao = gl.createVertexArray();
+    gl.activeTexture(gl.TEXTURE0 + UNIT_FN); gl.bindTexture(gl.TEXTURE_2D, t);
+    gl.texStorage2D(gl.TEXTURE_2D, Math.log2(n) + 1, gl.RGBA8, n, n);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, t, 0);
+    const P = program(`void main(){ vec2 p = vec2((gl_VertexID<<1)&2, gl_VertexID&2); gl_Position = vec4(p*2.0 - 1.0, 0.0, 1.0); }`,
+      GLSL_COMMON + `out vec4 o; uniform float uN;
+void main(){
+  // this texel's centre (m) and spacing; the heights from the stored grid's pyramid at that spacing (metres)
+  float dx = uHeightP.z/uHeightP.y/uN, lod = max(log2(dx*uHeightP.y), 0.0);
+  vec2 q = uHeightP.x + gl_FragCoord.xy*dx;
+  vec2 e1 = vec2(dx, 0.0), e2 = vec2(0.0, dx);
+  vec3 nn = normalize(vec3(hmLod(q - e1, lod) - hmLod(q + e1, lod), 2.0*dx, hmLod(q - e2, lod) - hmLod(q + e2, lod)));
+  // enclosure 31 m out, on heights smoothed about as much (the tile cache's fine-LOD definition)
+  float d = 31.25, ls = max(log2(d*uHeightP.y), 0.0), c = hmLod(q, ls);
+  float e = ((hmLod(q + vec2(d, 0.0), ls) + hmLod(q - vec2(d, 0.0), ls) + hmLod(q + vec2(0.0, d), ls) + hmLod(q - vec2(0.0, d), ls))*0.25 - c)/d;
+  o = vec4(nn.xz*0.5 + 0.5, clamp(e*2.0, -1.0, 1.0)*0.5 + 0.5, 1.0);
+}`);
+    gl.disable(gl.DEPTH_TEST); gl.disable(gl.BLEND); gl.disable(gl.CULL_FACE);
+    gl.viewport(0, 0, n, n); gl.useProgram(P.p); setEnv(P); gl.uniform1f(P.u.uN, n);
+    gl.bindVertexArray(vao); gl.drawArrays(gl.TRIANGLES, 0, 3); gl.bindVertexArray(null);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null); gl.deleteFramebuffer(fb);
+    gl.generateMipmap(gl.TEXTURE_2D);
+    for (const [k, v] of [[gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR], [gl.TEXTURE_MAG_FILTER, gl.LINEAR], [gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE], [gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE]]) gl.texParameteri(gl.TEXTURE_2D, k, v);
+    const an = gl.getExtension('EXT_texture_filter_anisotropic');
+    if (an) gl.texParameterf(gl.TEXTURE_2D, an.TEXTURE_MAX_ANISOTROPY_EXT, Math.min(16, gl.getParameter(an.MAX_TEXTURE_MAX_ANISOTROPY_EXT)));
+    gl.activeTexture(gl.TEXTURE0);
   }
 
   // ── water: one huge camera-centred quad at y=0 ──
@@ -750,9 +849,51 @@ void main(){
       planes[p * 4 + 3] = m[15] + sgn * m[12 + row];
     }
   }
+  // Each node's height range, from a min/max pyramid of the island's samples (Int16, metres rounded outward, blocks of
+  // 8 samples and up): the frustum test uses it instead of the whole world's range (fewer nodes, most of all in the
+  // shadow cascades' tight boxes), and sea floor more than SEA_CUT deep isn't subdivided further — under that much water
+  // it's invisible (and so are the cracks against finer neighbours)
+  const SEA_CUT = -40, HMARGIN = 20;
+  const HP = (() => {
+    if (typeof ISLAND === 'undefined' || !ISLAND) return null;
+    // 16-bit steps (height = q·step + offset); blocks of 8 samples, read every other sample (a 7.8 m grid's neighbours
+    // differ by a few metres at most: HMARGIN covers them, the bicubic's overshoot and the micro-relief)
+    const n = ISLAND.n, q = ISLAND.q, st = ISLAND.step, of = ISLAND.offset, lv = [], B = 8, l0 = 3;
+    let w = n / B, lo = new Int16Array(w * w), hi = new Int16Array(w * w);
+    for (let b = 0; b < w; b++) for (let a = 0; a < w; a++) {
+      let mn = 65535, mx = 0;
+      for (let y = b * B; y < b * B + B; y += 2) for (let x = a * B, o = y * n; x < a * B + B; x += 2) { const v = q[o + x]; if (v < mn) mn = v; if (v > mx) mx = v; }
+      lo[b * w + a] = Math.floor(mn * st + of) - HMARGIN; hi[b * w + a] = Math.ceil(mx * st + of) + HMARGIN;
+    }
+    lv[l0] = [lo, hi, w];
+    for (let l = l0 + 1; w > 1; l++) {
+      const w2 = w >> 1, lo2 = new Int16Array(w2 * w2), hi2 = new Int16Array(w2 * w2);
+      for (let b = 0; b < w2; b++) for (let a = 0; a < w2; a++) {
+        const i = b * 2 * w + a * 2;
+        lo2[b * w2 + a] = Math.min(lo[i], lo[i + 1], lo[i + w], lo[i + w + 1]); hi2[b * w2 + a] = Math.max(hi[i], hi[i + 1], hi[i + w], hi[i + w + 1]);
+      }
+      lo = lo2; hi = hi2; w = w2; lv[l] = [lo, hi, w];
+    }
+    return { lv, n, inv: ISLAND.inv, origin: ISLAND.origin, l0 };
+  })();
+  const hr = [MINH, MAXH];
+  function nodeRange(x, z, s) { // → hr = [min, max] of the ground under the node (with margins)
+    if (!HP) { hr[0] = MINH; hr[1] = MAXH; return hr; }
+    const n = HP.n, a0 = Math.max(0, Math.floor((x - HP.origin) * HP.inv) - 1), a1 = Math.min(n - 1, Math.ceil((x + s - HP.origin) * HP.inv) + 1);
+    const b0 = Math.max(0, Math.floor((z - HP.origin) * HP.inv) - 1), b1 = Math.min(n - 1, Math.ceil((z + s - HP.origin) * HP.inv) + 1);
+    // outside the data the ground is its edge's (terrainH clamps): the clamped indices already say so
+    const A0 = Math.min(a0, n - 1), A1 = Math.max(a1, 0), B0 = Math.min(b0, n - 1), B1 = Math.max(b1, 0);
+    let l = HP.l0;
+    while (l < HP.lv.length - 1 && ((A1 >> l) - (A0 >> l) > 1 || (B1 >> l) - (B0 >> l) > 1)) l++;
+    const [lo, hi, w] = HP.lv[l];
+    let mn = 1e9, mx = -1e9;
+    for (let b = B0 >> l; b <= B1 >> l; b++) for (let a = A0 >> l; a <= A1 >> l; a++) { const i = b * w + a; if (lo[i] < mn) mn = lo[i]; if (hi[i] > mx) mx = hi[i]; }
+    hr[0] = mn; hr[1] = mx;
+    return hr;
+  }
   let cx = 0, cy = 0, cz = 0;
   function visible(x, z, s) {
-    const x0 = x - cx, x1 = x0 + s, z0 = z - cz, z1 = z0 + s, y0 = MINH - cy, y1 = MAXH - cy;
+    const x0 = x - cx, x1 = x0 + s, z0 = z - cz, z1 = z0 + s, y0 = hr[0] - cy, y1 = hr[1] - cy; // hr: nodeRange() just before
     for (let p = 0; p < 6; p++) {
       const a = planes[p * 4], b = planes[p * 4 + 1], c = planes[p * 4 + 2], d = planes[p * 4 + 3];
       if (a * (a > 0 ? x1 : x0) + b * (b > 0 ? y1 : y0) + c * (c > 0 ? z1 : z0) + d < 0) return false;
@@ -770,8 +911,9 @@ void main(){
   function select(x, z, s, L) {
     const d = boxDist(x, z, s);
     if (d > RANGE[L]) return false;
+    nodeRange(x, z, s);
     if (!visible(x, z, s)) return true;
-    if (L === 0 || d > RANGE[L - 1]) { add(lists[0], x, z, s, L); return true; }
+    if (L === 0 || d > RANGE[L - 1] || hr[1] < SEA_CUT) { add(lists[0], x, z, s, L); return true; }
     const h = s / 2;
     for (let q = 0; q < 4; q++) {
       const qx = x + (q & 1) * h, qz = z + (q >> 1) * h;
@@ -783,9 +925,11 @@ void main(){
   const stats = { nodes: 0, shadowNodes: 0, generated: 0 };
   let viewLod = 1; // quality preset: > 1 coarsens the terrain everywhere (view and shadows alike)
   let detail = 2;  // per-pixel surface detail octaves: 0 none, 1 two, 2 three
+  let zoomK = 1;   // the projection's zoom relative to a 72° field of view: narrower keeps the finer rings further out
   // CDLOD selection against env.vp's frustum (the camera's, or a shadow cascade's); lod > 1 coarsens
   function selectAll(cam, lod) {
-    cx = cam.pos[0]; cy = cam.pos[1]; cz = cam.pos[2]; lodScale = lod * viewLod;
+    zoomK = Math.min(2, Math.max(0.6, 0.7265 / (cam.tanY || 0.7265)));
+    cx = cam.pos[0]; cy = cam.pos[1]; cz = cam.pos[2]; lodScale = lod * viewLod / zoomK;
     setFrustum(env.vp);
     for (const l of lists) l.length = 0;
     count = 0;
@@ -793,7 +937,7 @@ void main(){
     const rx = Math.floor(cx / RS), rz = Math.floor(cz / RS);
     for (let i = -1; i <= 1; i++) for (let j = -1; j <= 1; j++) {
       const x = (rx + i) * RS, z = (rz + j) * RS;
-      if (!select(x, z, RS, LEVELS - 1) && visible(x, z, RS)) add(lists[0], x, z, RS, LEVELS - 1);
+      if (!select(x, z, RS, LEVELS - 1) && (nodeRange(x, z, RS), visible(x, z, RS))) add(lists[0], x, z, RS, LEVELS - 1);
     }
     lodScale = 1;
     return count;
@@ -835,7 +979,7 @@ void main(){
     stats.shadowNodes += selectAll(cam, lod);
     gl.enable(gl.CULL_FACE);
     gl.useProgram(TPS.p); setEnv(TPS);
-    drawNodes(TPS, RK / (lod * viewLod));
+    drawNodes(TPS, RK * zoomK / (lod * viewLod));
     gl.disable(gl.CULL_FACE);
   }
   function beginFrame() { frameNo++; stats.generated = 0; stats.shadowNodes = 0; }
@@ -859,9 +1003,10 @@ void main(){
       gl.activeTexture(gl.TEXTURE0 + UNIT_MN); gl.bindTexture(gl.TEXTURE_2D_ARRAY, mat.n); gl.activeTexture(gl.TEXTURE0);
     }
     gl.uniform1i(TP.u.uMatC, UNIT_MC); gl.uniform1i(TP.u.uMatN, UNIT_MN); gl.uniform1f(TP.u.uMat, mat.ready && mat.on ? 1 : 0);
+    gl.uniform1i(TP.u.uFarN, UNIT_FN);
     gl.uniform3fv(TP.u.uG, g.pos); gl.uniform3fv(TP.u.uGR, g.r); gl.uniform3fv(TP.u.uGF, g.f);
     gl.uniform3fv(TP.u.uGV, g.vel); gl.uniform1f(TP.u.uGAgl, g.agl);
-    drawNodes(TP, RK / viewLod);
+    drawNodes(TP, RK * zoomK / viewLod);
     gl.disable(gl.CULL_FACE);
   }
   // depthTex: the resolved scene depth (terrain under the water) or null; nearFar: the camera projection's planes

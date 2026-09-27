@@ -619,6 +619,11 @@ const FLORA = (() => {
     const lods = [built.N.upload(), built.M.upload(), built.F.upload()];
     const K = Object.assign({ name, species, lods, tris: lods.map(m => m.count / 3), top: built.top, width: built.width, coll: built.coll }, meta);
     K.band = [[-1e5, K.R1], [K.R1, K.R2], [K.R2, -1]];
+    // the mid LOD's bounding cylinder (centre x, z, radius, bottom, top): the impostor's quad is its outline from the viewer
+    const v = built.M.v, lo = lods[1].bounds.lo, hi = lods[1].bounds.hi, ccx = (lo[0] + hi[0]) / 2, ccz = (lo[2] + hi[2]) / 2;
+    let rh = 0;
+    for (let o = 0; o < v.length; o += ST) rh = Math.max(rh, Math.hypot(v[o] - ccx, v[o + 2] - ccz));
+    K.cyl = [ccx, ccz, rh, Math.max(lo[1], -0.5), hi[1]]; // roots below the ground never show
     KINDS.push(K);
   }
   addKind('oak', 'broadleaf', broadleaf(11, { H: 13, crown: [7.6, 5.2, 7.2], fork: 0.62, shell: 0.62, cs: 0.4, trunkR: 0.56, clumps: 14, limbs: 5, lean: [0.5, -0.3], roots: 5, flare: 0.9, ridge: 0.075, pal: PAL.oak, bark: BARK.oak }), TREE);
@@ -663,12 +668,19 @@ void main(){
   float lo = clamp((uLod.x - d)/uLod.z, 0.0, 1.0);
   float hi = uLod.y < 0.0 ? clamp((iB.w - d)/25.0, 0.0, 1.0) : clamp((uLod.y - d)/uLod.z, 0.0, 1.0);
   vFade = uLod.w > 0.5 ? vec2(0.0, 2.0) : vec2(lo, hi);
-  float sc = iA.w;
-  if (uMode > 0.5) { sc *= 1.0 - smoothstep(uLod.x - uLod.z, uLod.x, d); vFade = vec2(0.0, sc > 0.01 ? 2.0 : 0.0); }
+  float sc = iA.w, wide = 1.0;
+  if (uMode > 0.5) {
+    // grass & flowers: full density out to uLod.y, then each tuft stays while its seed is under (uLod.y/d)² and the
+    // survivors widen (and grow a little) to keep the meadow's cover; all gone by uLod.x
+    float f = min(1.0, uLod.y*uLod.y/(d*d));
+    wide = min(inversesqrt(f), 3.5);
+    sc *= clamp((f - iB.z)/(0.25*f), 0.0, 1.0)*(1.0 - smoothstep(uLod.x - uLod.z, uLod.x, d));
+    vFade = vec2(0.0, sc > 0.01 ? 2.0 : 0.0);
+  }
   vN = vec3(0.0, 1.0, 0.0); vCol = vec3(0.0); vRel = rel0; vEx = vec4(0.0);
   if (vFade.y <= vFade.x + 0.01) { gl_Position = vec4(0.0, 0.0, 2.0, 1.0); return; }
   float c = cos(iB.x), s = sin(iB.x);
-  vec3 lp = aP*sc;
+  vec3 lp = aP*sc*vec3(wide, pow(wide, 0.35), wide);
   vec3 p = vec3(lp.x*c + lp.z*s, lp.y, -lp.x*s + lp.z*c);
   vec3 n = vec3(aN.x*c + aN.z*s, aN.y, -aN.x*s + aN.z*c);
   float mat = aX.z;
@@ -801,21 +813,47 @@ void main(){
   }
   function drawGrass(B, gx, gy, gz, gw) {
     gl.uniform1f(U.uMode, 1);
-    gl.uniform4f(U.uLod, GR, 0, 22, 0);
+    gl.uniform4f(U.uLod, GR, GR_FULL, FF.on ? 40 : 22, 0);
     gl.uniform1f(U.uSway, 0.13); gl.uniform1f(U.uStiff, 0);
     if (U.uG) gl.uniform4f(U.uG, gx, gy, gz, gw);
     for (let s = 0; s < NG; s++) drawSlot(B, s);
   }
 
   // ───── world tiles ─────
+  // The near tiles draw meshes out to the mid LOD's reach (trees 300 m, bushes 120 m) and carry the crash test; beyond,
+  // the far forest (below) draws the same plants as impostors
   const TILE = 128, CELL = 8, NC = TILE / CELL, GS = 16, GN = TILE / GS + 1;
-  const CAPS = [1500, 5000, 12000], MARGIN = 20, FAR_MAX = 1300; // MARGIN > camera travel between rebuilds (16 m)
+  // FAR_MAX: the near tiles' reach — the mid LOD's with the far forest on (High), the far meshes' otherwise (Medium, Low)
+  const CAPS = [1500, 5000, 12000], MARGIN = 20, FAR_MESH = 1300; // MARGIN > camera travel between rebuilds (16 m)
+  let FAR_MAX = Math.max(TREE.R2, SHRUB.R2) + MARGIN;
   const tiles = new Map();
   const tkey = (i, j) => (i + 32768) * 65536 + (j + 32768);
-  // per-tile coarse grids (16 m): height, forest mask, copse / altitude-jitter / grove noises; candidates read them
-  // bilinearly, and only accepted plants pay for an exact terrainH
-  const hgrid = new Float64Array(GN * GN), fgrid = new Float64Array(GN * GN), cgrid = new Float64Array(GN * GN);
-  const agrid = new Float64Array(GN * GN), vgrid = new Float64Array(GN * GN);
+  // coarse grids on a 16 m lattice: height, forest mask, copse / altitude-jitter / grove noises; candidates read them
+  // bilinearly, and only accepted plants pay for an exact terrainH. A near tile fills its 9×9 points up front; the far
+  // forest's tiles (up to 1 km, 65×65 points, sparse cells) evaluate the points their candidates touch, on demand
+  const LMAX = 65 * 65;
+  const hgrid = new Float64Array(LMAX), fgrid = new Float64Array(LMAX), cgrid = new Float64Array(LMAX);
+  const agrid = new Float64Array(LMAX), vgrid = new Float64Array(LMAX), GRIDS = [hgrid, fgrid, cgrid, agrid, vgrid];
+  function latVal(g, x, z) {
+    if (g === 0) return terrainH(x, z, 1);
+    if (g === 1) return forestMask(x, z);
+    // copses: small domain-warped blobs of trees in open country
+    if (g === 2) return vn(x * 0.0105 + 17.3 + (vn(x * 0.021 + 3.1, z * 0.021) - 0.5) * 1.2, z * 0.0105 + 5.9 + (vn(x * 0.021, z * 0.021 + 7.7) - 0.5) * 1.2);
+    if (g === 3) return vn(x * 0.0037 + 2.2, z * 0.0037 + 6.1);
+    return vn(x * 0.013 + 4.4, z * 0.013 + 1.3);
+  }
+  const LZ = { on: false, x0: 0, z0: 0, n: 0, gen: 0, stamp: GRIDS.map(() => new Int32Array(LMAX)) };
+  function lazyGrid(g) { // lazy mode: evaluate the four corners of GI's lattice cell in grid g
+    if (!LZ.on) return;
+    const st = LZ.stamp[g], arr = GRIDS[g], n = LZ.n;
+    for (let c = 0; c < 4; c++) {
+      const i = GI.i + (c & 1) + (c >> 1) * n;
+      if (st[i] === LZ.gen) continue;
+      st[i] = LZ.gen;
+      const a = i % n;
+      arr[i] = latVal(g, LZ.x0 + a * GS, LZ.z0 + (i - a) / n * GS);
+    }
+  }
   const GI = { i: 0, n: 0, tx: 0, tz: 0, cell: 1 };
   function gridAt(x0, z0, x, z, cell, n) {
     const fx = (x - x0) / cell, fz = (z - z0) / cell;
@@ -836,6 +874,12 @@ void main(){
   const scount = new Int32Array(NK), collScratch = new Float32Array(NC * NC * 2 * 5);
   let nColl = 0, tyMin = 0, tyMax = 0;
   function push(k, x, y, z, s, rot, tint, seed, far) {
+    if (LZ.on) { // a far-forest tile: (x, y, z, scale, rotation, tint, rank, kind)
+      if ((farN + 1) * 8 > farOut.length) { const t = new Float32Array(farOut.length * 2); t.set(farOut); farOut = t; }
+      const o = farN++ * 8;
+      farOut[o] = x; farOut[o + 1] = y; farOut[o + 2] = z; farOut[o + 3] = s; farOut[o + 4] = rot; farOut[o + 5] = tint; farOut[o + 6] = farRank; farOut[o + 7] = k;
+      return;
+    }
     const d = scratch[k], o = scount[k]++ * 8;
     d[o] = x; d[o + 1] = y; d[o + 2] = z; d[o + 3] = s; d[o + 4] = rot; d[o + 5] = tint; d[o + 6] = seed; d[o + 7] = far;
     const K = KINDS[k];
@@ -874,16 +918,77 @@ void main(){
     s *= 1 - 0.32 * ss(460, 620, h);
     let tint = hs(gx, gz, 12);
     if (sp === 'broadleaf' && place === 0 && hs(gx, gz, 13) < 0.016) tint += 2;
-    const far = place === 0 ? 560 + 700 * hs(gx, gz, 15) : FAR_MAX;
+    const far = place === 0 ? 560 + 700 * hs(gx, gz, 15) : FAR_MESH;
     push(k, x, h - 0.45 - (1 - ny) * 6, z, s, hs(gx, gz, 11) * TAU, tint, hs(gx, gz, 14), far);
+  }
+  // and out of the island's lakes: their basins (an id mask from the map file) below each lake's level plus a margin
+  const LK = (() => {
+    const M = typeof window !== 'undefined' && window.ISLAND_MAPS;
+    if (!M || !M.lakeMask || !M.lakes || !M.lakes.length || typeof ISLAND === 'undefined' || !ISLAND) return null;
+    const lvl = new Float32Array(256).fill(-1e9);
+    for (const l of M.lakes) lvl[l.id] = l.level;
+    return { m: M.lakeMask, n: M.nl, lvl, k: M.nl / ISLAND.size, o: ISLAND.origin };
+  })();
+  function inLake(x, z, h, pad) {
+    if (!LK) return false;
+    const u = Math.floor((x - LK.o) * LK.k), v = Math.floor((z - LK.o) * LK.k);
+    if (u < 0 || v < 0 || u >= LK.n || v >= LK.n) return false;
+    const id = LK.m[v * LK.n + u];
+    return id > 0 && h < LK.lvl[id] + pad;
   }
   // keep plants off buildings, ruins and walls (LANDMARKS loads after this file and may be absent in isolated builds)
   const occupied = (x, z, pad) => { try { return LANDMARKS.occupied(x, z, pad); } catch (e) { return false; } };
+  // one 8 m cell's tree candidate: forest, copse or lone meadow tree (shared by the near tiles and the far forest)
+  function treeCand(gx, gz, x0, z0, n) {
+    const r1 = hs(gx, gz, 1);
+    if (r1 >= 0.9) return;
+    const x = (gx + 0.5 + (hs(gx, gz, 2) - 0.5) * 0.9) * CELL, z = (gz + 0.5 + (hs(gx, gz, 3) - 0.5) * 0.9) * CELL;
+    gridAt(x0, z0, x, z, GS, n); lazyGrid(1);
+    const fm = bil(fgrid);
+    let p = ss(0.1, 0.65, fm) * 0.9, place = 0;
+    if (p < 0.6) {
+      lazyGrid(2);
+      const pc = ss(0.72, 0.82, bil(cgrid)) * 0.62 * (1 - fm);
+      if (pc > p) { p = pc; place = 1; }
+      if (p < 0.011) { p = 0.011; place = 2; }
+    }
+    if (r1 >= p) return;
+    lazyGrid(0);
+    const hc = bil(hgrid);
+    if (!(hc > 1.5 && hc < 640 && slopeNy(hgrid) > 0.8)) return;
+    const h = terrainH(x, z, 1);
+    if (h > 3 + hs(gx, gz, 6) * 2.5 && hs(gx, gz, 7) < ss(625, 520, h)) {
+      const ex = h - terrainH(x + 1.5, z, 1), ez = h - terrainH(x, z + 1.5, 1), ny = 1.5 / Math.sqrt(ex * ex + 2.25 + ez * ez);
+      if (ny > 0.84 + (hs(gx, gz, 5) - 0.5) * 0.03 && !inLake(x, z, h, 1.5) && !occupied(x, z, 4.5)) { lazyGrid(3); lazyGrid(4); placeTree(gx, gz, x, z, h, ny, fm, place); }
+    }
+  }
+  // one cell's bush candidate: meadows, forest edges and copse fringes
+  function bushCand(gx, gz, x0, z0, n) {
+    const rb = hs(gx, gz, 20);
+    if (rb >= 0.4) return;
+    const x = (gx + 0.5 + (hs(gx, gz, 21) - 0.5) * 0.95) * CELL, z = (gz + 0.5 + (hs(gx, gz, 22) - 0.5) * 0.95) * CELL;
+    gridAt(x0, z0, x, z, GS, n); lazyGrid(1);
+    const fm = bil(fgrid);
+    if (fm >= 0.8) return;
+    lazyGrid(2);
+    const edge = ss(0.02, 0.25, fm) * (1 - ss(0.45, 0.8, fm));
+    const p = 0.045 + 0.32 * edge + 0.3 * ss(0.66, 0.76, bil(cgrid)) * (1 - fm);
+    if (rb >= p) return;
+    lazyGrid(0);
+    const hc = bil(hgrid), ny = slopeNy(hgrid);
+    if (!(hc > 2 && hc < 620 && ny > 0.82)) return;
+    const h = terrainH(x, z, 1);
+    if (h > 3.5 + hs(gx, gz, 23) * 2 && h < 600 && !inLake(x, z, h, 1.0) && !occupied(x, z, 1.5)) {
+      const k = hs(gx, gz, 24) < (fm < 0.05 ? 0.3 : 0.1) ? K_BLOSSOM : hs(gx, gz, 25) < 0.4 ? K_LOWBUSH : K_BUSH;
+      push(k, x, h - 0.25 - (1 - ny) * 3, z, (0.6 + 0.75 * hs(gx, gz, 26)) * (1 - 0.3 * ss(450, 600, h)), hs(gx, gz, 27) * TAU,
+        hs(gx, gz, 28), hs(gx, gz, 29), 280 + 160 * hs(gx, gz, 30));
+    }
+  }
   function genTile(ti, tj) {
     const x0 = ti * TILE, z0 = tj * TILE;
     let gmin = 1e9, gmax = -1e9;
     for (let b = 0; b < GN; b++) for (let a = 0; a < GN; a++) {
-      const h = terrainH(x0 + a * GS, z0 + b * GS, 1);
+      const h = latVal(0, x0 + a * GS, z0 + b * GS);
       hgrid[b * GN + a] = h;
       if (h < gmin) gmin = h;
       if (h > gmax) gmax = h;
@@ -892,59 +997,12 @@ void main(){
     if (gmax > 2 && gmin < 650) {
       for (let b = 0; b < GN; b++) for (let a = 0; a < GN; a++) {
         const x = x0 + a * GS, z = z0 + b * GS, q = b * GN + a;
-        fgrid[q] = forestMask(x, z);
-        // copses: small domain-warped blobs of trees in open country
-        cgrid[q] = vn(x * 0.0105 + 17.3 + (vn(x * 0.021 + 3.1, z * 0.021) - 0.5) * 1.2, z * 0.0105 + 5.9 + (vn(x * 0.021, z * 0.021 + 7.7) - 0.5) * 1.2);
-        agrid[q] = vn(x * 0.0037 + 2.2, z * 0.0037 + 6.1);
-        vgrid[q] = vn(x * 0.013 + 4.4, z * 0.013 + 1.3);
+        fgrid[q] = latVal(1, x, z); cgrid[q] = latVal(2, x, z); agrid[q] = latVal(3, x, z); vgrid[q] = latVal(4, x, z);
       }
       for (let b = 0; b < NC; b++) for (let a = 0; a < NC; a++) {
         const gx = ti * NC + a, gz = tj * NC + b;
-        // tree candidate
-        const r1 = hs(gx, gz, 1);
-        if (r1 < 0.9) {
-          const x = (gx + 0.5 + (hs(gx, gz, 2) - 0.5) * 0.9) * CELL, z = (gz + 0.5 + (hs(gx, gz, 3) - 0.5) * 0.9) * CELL;
-          gridAt(x0, z0, x, z, GS, GN);
-          const fm = bil(fgrid);
-          let p = ss(0.1, 0.65, fm) * 0.9, place = 0;
-          if (p < 0.6) {
-            const pc = ss(0.72, 0.82, bil(cgrid)) * 0.62 * (1 - fm);
-            if (pc > p) { p = pc; place = 1; }
-            if (p < 0.011) { p = 0.011; place = 2; }
-          }
-          if (r1 < p) {
-            const hc = bil(hgrid);
-            if (hc > 1.5 && hc < 640 && slopeNy(hgrid) > 0.8) {
-              const h = terrainH(x, z, 1);
-              if (h > 3 + hs(gx, gz, 6) * 2.5 && hs(gx, gz, 7) < ss(625, 520, h)) {
-                const ex = h - terrainH(x + 1.5, z, 1), ez = h - terrainH(x, z + 1.5, 1), ny = 1.5 / Math.sqrt(ex * ex + 2.25 + ez * ez);
-                if (ny > 0.84 + (hs(gx, gz, 5) - 0.5) * 0.03 && !occupied(x, z, 4.5)) placeTree(gx, gz, x, z, h, ny, fm, place);
-              }
-            }
-          }
-        }
-        // bush candidate: meadows, forest edges and copse fringes
-        const rb = hs(gx, gz, 20);
-        if (rb < 0.4) {
-          const x = (gx + 0.5 + (hs(gx, gz, 21) - 0.5) * 0.95) * CELL, z = (gz + 0.5 + (hs(gx, gz, 22) - 0.5) * 0.95) * CELL;
-          gridAt(x0, z0, x, z, GS, GN);
-          const fm = bil(fgrid);
-          if (fm < 0.8) {
-            const edge = ss(0.02, 0.25, fm) * (1 - ss(0.45, 0.8, fm));
-            const p = 0.045 + 0.32 * edge + 0.3 * ss(0.66, 0.76, bil(cgrid)) * (1 - fm);
-            if (rb < p) {
-              const hc = bil(hgrid), ny = slopeNy(hgrid);
-              if (hc > 2 && hc < 620 && ny > 0.82) {
-                const h = terrainH(x, z, 1);
-                if (h > 3.5 + hs(gx, gz, 23) * 2 && h < 600 && !occupied(x, z, 1.5)) {
-                  const k = hs(gx, gz, 24) < (fm < 0.05 ? 0.3 : 0.1) ? K_BLOSSOM : hs(gx, gz, 25) < 0.4 ? K_LOWBUSH : K_BUSH;
-                  push(k, x, h - 0.25 - (1 - ny) * 3, z, (0.6 + 0.75 * hs(gx, gz, 26)) * (1 - 0.3 * ss(450, 600, h)), hs(gx, gz, 27) * TAU,
-                    hs(gx, gz, 28), hs(gx, gz, 29), 280 + 160 * hs(gx, gz, 30));
-                }
-              }
-            }
-          }
-        }
+        treeCand(gx, gz, x0, z0, GN);
+        bushCand(gx, gz, x0, z0, GN);
       }
     }
     const lists = [], mems = [], minFar = [];
@@ -1058,7 +1116,7 @@ void main(){
         const li = l >> 1, k = t.lists[l], K = KINDS[k], arr = t.lists[l + 1], n = arr.length >> 3;
         // per LOD: 0 = not needed, 1 = whole list (tile inside the band), 2 = per instance
         let bulk = 0, want = 0;
-        for (let lod = 0; lod < 3; lod++) {
+        for (let lod = 0; lod < (FF.on ? 2 : 3); lod++) { // with the far forest on, its impostors replace the far meshes
           const d0 = K.band[lod][0] - K.W - MARGIN, d1 = (lod === 2 ? K.FAR : K.band[lod][1]) + MARGIN;
           if (maxD < d0 || minD > d1) continue;
           if (minD >= d0 && maxD <= (lod === 2 ? Math.min(d1, t.minFar[li] + MARGIN) : d1)) bulk |= 1 << lod; else want |= 1 << lod;
@@ -1108,16 +1166,431 @@ void main(){
     last.lod[0] = lodT[0]; last.lod[1] = lodT[1]; last.lod[2] = lodT[2];
   }
 
+  // ───── impostors (view range, ticket 14): every tree and bush kind seen from 64 directions over the upper hemisphere ─────
+  // Frames sit on a hemi-octahedral grid (IG×IG, the grid's edge is the horizon, its centre looks straight down), each
+  // an orthographic view of the kind's mid LOD fitted to its bounding sphere. Two texture arrays, one layer per frame
+  // (no bleeding between frames at any mip): premultiplied colour + coverage, and premultiplied normal (the tree's own
+  // frame) + ambient occlusion. Captured once at load with 4× MSAA, so edges and mips carry fractional coverage.
+  const IG = 8, IF = 64, NFR = IG * IG;
+  const impK = new Float32Array(NK * 4); // per kind: bounding-sphere centre (x, y, z) and radius, unscaled
+  const impC = new Float32Array(NK * 8); // per kind: bounding cylinder (centre x, bottom, centre z, radius), (top, -, -, -)
+  KINDS.forEach((K, k) => { const c = K.cyl; impC.set([c[0], c[3], c[1], c[2], c[4], 0, 0, 0], k * 8); });
+  const IMP_GLSL = `
+const float IG = ${IG}.0;
+vec2 hemiOct(vec3 d){ d.y = max(d.y, 0.0); d /= abs(d.x) + d.y + abs(d.z); return vec2(d.x + d.z, d.x - d.z); }
+vec3 hemiOctDec(vec2 e){ vec3 d = vec3((e.x + e.y)*0.5, 0.0, (e.x - e.y)*0.5); d.y = 1.0 - abs(d.x) - abs(d.z); return normalize(d); }
+// frame (i, j)'s view direction (toward the viewer) and image axes
+vec3 frameDir(vec2 ij){ return hemiOctDec(ij/(IG - 1.0)*2.0 - 1.0); }
+void frameBasis(vec3 d, out vec3 r, out vec3 u){ r = normalize(cross(vec3(0.0, 1.0, 0.0), d)); u = cross(d, r); }
+`;
+  const impAlb = gl.createTexture(), impNrm = gl.createTexture(), UNIT_IA = 20, UNIT_IN = 21;
+  (function captureImpostors() {
+    const T = gl.TEXTURE_2D_ARRAY, layers = NK * NFR, lv = Math.log2(IF) + 1;
+    // colour in sRGB storage so the MSAA resolve and the mips average in linear light (in gamma space a crown's bright
+    // tops and dark gaps average ~40% too dark)
+    for (const [t, u, f] of [[impAlb, UNIT_IA, gl.SRGB8_ALPHA8], [impNrm, UNIT_IN, gl.RGBA8]]) {
+      gl.activeTexture(gl.TEXTURE0 + u); gl.bindTexture(T, t);
+      gl.texStorage3D(T, lv, f, IF, IF, layers);
+      for (const [k, v] of [[gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR], [gl.TEXTURE_MAG_FILTER, gl.LINEAR], [gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE], [gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE]]) gl.texParameteri(T, k, v);
+    }
+    const CP = program(`
+layout(location=0) in vec3 aP; layout(location=1) in vec3 aN; layout(location=2) in vec3 aC; layout(location=3) in vec4 aX;
+uniform vec3 uR, uU, uD; uniform vec4 uS; out vec3 vN; out vec3 vC; out float vAO;
+void main(){ vec3 q = aP - uS.xyz; vN = aN; vC = aC; vAO = aX.x;
+  gl_Position = vec4(dot(q, uR)/uS.w, dot(q, uU)/uS.w, -dot(q, uD)/uS.w, 1.0); }`, `
+in vec3 vN; in vec3 vC; in float vAO; layout(location=0) out vec4 oA; layout(location=1) out vec4 oN;
+void main(){ oA = vec4(pow(clamp(vC, 0.0, 1.0), vec3(2.2)), 1.0); oN = vec4(normalize(vN)*0.5 + 0.5, vAO); }`);
+    const fbM = gl.createFramebuffer(), fbL = gl.createFramebuffer(), rb = [0, 1, 2].map(() => gl.createRenderbuffer());
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fbM);
+    [gl.SRGB8_ALPHA8, gl.RGBA8, gl.DEPTH_COMPONENT24].forEach((f, i) => {
+      gl.bindRenderbuffer(gl.RENDERBUFFER, rb[i]); gl.renderbufferStorageMultisample(gl.RENDERBUFFER, 4, f, IF, IF);
+      gl.framebufferRenderbuffer(gl.FRAMEBUFFER, i < 2 ? gl.COLOR_ATTACHMENT0 + i : gl.DEPTH_ATTACHMENT, gl.RENDERBUFFER, rb[i]);
+    });
+    gl.drawBuffers([gl.COLOR_ATTACHMENT0, gl.COLOR_ATTACHMENT1]);
+    const vao = gl.createVertexArray();
+    gl.useProgram(CP.p); gl.viewport(0, 0, IF, IF);
+    gl.enable(gl.DEPTH_TEST); gl.depthFunc(gl.LEQUAL); gl.depthMask(true); gl.disable(gl.BLEND); gl.enable(gl.CULL_FACE);
+    const dec = (i, j) => { // frameDir() in JS
+      const ex = i / (IG - 1) * 2 - 1, ey = j / (IG - 1) * 2 - 1, x = (ex + ey) / 2, z = (ex - ey) / 2;
+      return nrm([x, 1 - Math.abs(x) - Math.abs(z), z]);
+    };
+    for (let k = 0; k < NK; k++) {
+      const m = KINDS[k].lods[1], lo = m.bounds.lo, hi = m.bounds.hi;
+      const c = [(lo[0] + hi[0]) / 2, (lo[1] + hi[1]) / 2, (lo[2] + hi[2]) / 2], R = Math.hypot(hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]) / 2 * 1.02;
+      impK.set([c[0], c[1], c[2], R], k * 4);
+      gl.bindVertexArray(vao);
+      gl.bindBuffer(gl.ARRAY_BUFFER, m.vbo);
+      for (const [loc, size, off] of [[0, 3, 0], [1, 3, 3], [2, 3, 6], [3, 4, 9]]) { gl.enableVertexAttribArray(loc); gl.vertexAttribPointer(loc, size, gl.FLOAT, false, ST * 4, off * 4); gl.vertexAttribDivisor(loc, 0); }
+      gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, m.ibo);
+      gl.uniform4f(CP.u.uS, c[0], c[1], c[2], R);
+      for (let j = 0; j < IG; j++) for (let i = 0; i < IG; i++) {
+        const d = dec(i, j), r = nrm(cross([0, 1, 0], d)), u = cross(d, r), layer = k * NFR + j * IG + i;
+        gl.bindFramebuffer(gl.FRAMEBUFFER, fbM);
+        gl.clearColor(0, 0, 0, 0); gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+        gl.uniform3fv(CP.u.uR, r); gl.uniform3fv(CP.u.uU, u); gl.uniform3fv(CP.u.uD, d);
+        gl.drawElements(gl.TRIANGLES, m.count, gl.UNSIGNED_INT, 0);
+        // resolve each attachment into its layer
+        gl.bindFramebuffer(gl.READ_FRAMEBUFFER, fbM); gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, fbL);
+        for (let a = 0; a < 2; a++) {
+          gl.framebufferTextureLayer(gl.DRAW_FRAMEBUFFER, gl.COLOR_ATTACHMENT0, a ? impNrm : impAlb, 0, layer);
+          gl.readBuffer(gl.COLOR_ATTACHMENT0 + a); gl.drawBuffers([gl.COLOR_ATTACHMENT0]);
+          gl.blitFramebuffer(0, 0, IF, IF, 0, 0, IF, IF, gl.COLOR_BUFFER_BIT, gl.NEAREST);
+        }
+      }
+    }
+    gl.bindVertexArray(null); gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, null);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null); gl.bindFramebuffer(gl.READ_FRAMEBUFFER, null); gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, null);
+    gl.disable(gl.CULL_FACE); gl.clearColor(0, 0, 0, 1);
+    for (const r of rb) gl.deleteRenderbuffer(r);
+    gl.deleteFramebuffer(fbM); gl.deleteFramebuffer(fbL);
+    for (const [t, u] of [[impAlb, UNIT_IA], [impNrm, UNIT_IN]]) { gl.activeTexture(gl.TEXTURE0 + u); gl.bindTexture(T, t); gl.generateMipmap(T); }
+    gl.activeTexture(gl.TEXTURE0);
+  })();
+
+  // ───── far forest (view range, ticket 14): the same trees and bushes as the near tiles, out to FF.end, as impostors ─────
+  // Quadtree tiles: level k is 256·2^k m and covers its 32×32 cells of 8·2^k m, each standing for one 8 m cell of the
+  // near grid — the one it designates, chosen by hash level by level, so the cells a level designates are among those
+  // the level below designates (the coarser a tile, the sparser the same plants). A plant's rank r falls in its top
+  // designated level's band (level L: 4^-(L+1) ≤ r < 4^-L); the vertex shader keeps it while r < (d0/d)² and widens
+  // what it keeps by d/d0 so a forest's cover holds as it thins. A level-k tile serves where the camera is ≥ d0·2^k
+  // away, so it has every rank the thinning can keep there. Plants are placed by the near tiles' own code (treeCand,
+  // bushCand), so where the impostors take over from the meshes (trees 300 m, bushes 120 m) they're the same plants.
+  const FF = { d0: 1600, end: 10000, bushD0: 450, bushEnd: 2000, levels: 3, on: true, shadows: true, a2c: true };
+  const FT0 = 256, KMAX = 3, FCAP = 524288; // the GPU pool holds up to FCAP instances, each drawn tile in one range
+  let farOut = new Float32Array(4096 * 8), farN = 0, farRank = 1;
+  // is the island's stored ground anywhere inside [x0, x0+S]² within the heights plants grow at? (sea and high mountain
+  // tiles skip their 1024 candidates; the margins cover the bicubic's overshoot and the micro-relief)
+  function farTileLive(x0, z0, S) {
+    const I = typeof ISLAND !== 'undefined' && ISLAND;
+    if (!I) return true;
+    const n = I.n, q = I.q, a0 = Math.max(0, Math.floor((x0 - I.origin) * I.inv) - 2), a1 = Math.min(n - 1, Math.ceil((x0 + S - I.origin) * I.inv) + 2);
+    const b0 = Math.max(0, Math.floor((z0 - I.origin) * I.inv) - 2), b1 = Math.min(n - 1, Math.ceil((z0 + S - I.origin) * I.inv) + 2);
+    if (a0 > a1 || b0 > b1) return false;
+    const lo = (-12 - I.offset) / I.step, hi = (680 - I.offset) / I.step; // in the stored 16-bit steps
+    for (let b = b0; b <= b1; b++) for (let a = a0, o = b * n; a <= a1; a++) { const v = q[o + a]; if (v > lo && v < hi) return true; }
+    return false;
+  }
+  function genFarTile(k, ti, tj) {
+    const S = FT0 << k, cs = CELL << k, x0 = ti * S, z0 = tj * S, c0x = x0 / cs, c0z = z0 / cs;
+    if (!farTileLive(x0, z0, S)) return { data: new Float32Array(0), n: 0, off: -1, live: false, used: 0, x0, z0, S, y0: 0, y1: 0 };
+    LZ.on = true; LZ.gen++; LZ.x0 = x0; LZ.z0 = z0; LZ.n = S / GS + 1;
+    farN = 0;
+    for (let b = 0; b < 32; b++) for (let a = 0; a < 32; a++) {
+      let gx = c0x + a, gz = c0z + b;
+      for (let j = k; j >= 1; j--) { const c = (hs(gx, gz, 60 + j) * 4) | 0; gx = gx * 2 + (c & 1); gz = gz * 2 + (c >> 1); }
+      let L = k;
+      while (L < KMAX && ((hs(gx >> (L + 1), gz >> (L + 1), 61 + L) * 4) | 0) === ((gx >> L) & 1) + 2 * ((gz >> L) & 1)) L++;
+      farRank = L >= KMAX ? Math.pow(4, -KMAX) * hs(gx, gz, 59) : Math.pow(4, -(L + 1)) * (1 + 3 * hs(gx, gz, 59));
+      treeCand(gx, gz, x0, z0, LZ.n);
+      if (k === 0) bushCand(gx, gz, x0, z0, LZ.n);
+    }
+    LZ.on = false;
+    let y0 = 1e9, y1 = -1e9;
+    for (let o = 1; o < farN * 8; o += 8) { y0 = Math.min(y0, farOut[o]); y1 = Math.max(y1, farOut[o]); }
+    return { data: farOut.slice(0, farN * 8), n: farN, off: -1, live: false, used: 0, x0, z0, S, y0: y0 - 5, y1: y1 + 80 };
+  }
+  const fkey = (k, i, j) => (k * 8192 + i + 4096) * 8192 + j + 4096;
+  const ftiles = new Map(), fwant = [], fqueue = [];
+  const fpoolBuf = buffer(new Float32Array(FCAP * 8), gl.ARRAY_BUFFER, gl.DYNAMIC_DRAW);
+  const ffree = [[0, FCAP]]; // free ranges [start, length], sorted by start
+  let fzero = new Float32Array(8192 * 8), fFrame = 0;
+  const fstat = { tiles: 0, active: 0, instances: 0, drawn: 0, runs: 0, gen: 0, ms: 0, queue: 0, tileMax: 0 };
+  function falloc(n) {
+    for (let q = 0; q < ffree.length; q++) {
+      const r = ffree[q];
+      if (r[1] < n) continue;
+      const s0 = r[0]; r[0] += n; r[1] -= n;
+      if (!r[1]) ffree.splice(q, 1);
+      return s0;
+    }
+    return -1;
+  }
+  function frelease(s0, n) {
+    let q = 0;
+    while (q < ffree.length && ffree[q][0] < s0) q++;
+    ffree.splice(q, 0, [s0, n]);
+    if (q + 1 < ffree.length && s0 + n === ffree[q + 1][0]) { ffree[q][1] += ffree[q + 1][1]; ffree.splice(q + 1, 1); }
+    if (q > 0 && ffree[q - 1][0] + ffree[q - 1][1] === s0) { ffree[q - 1][1] += ffree[q][1]; ffree.splice(q, 1); }
+  }
+  function fupload(t) {
+    t.live = true;
+    if (!t.n) return;
+    t.off = falloc(t.n);
+    if (t.off < 0) return; // pool full: this tile stays out
+    gl.bindBuffer(gl.ARRAY_BUFFER, fpoolBuf); gl.bufferSubData(gl.ARRAY_BUFFER, t.off * 32, t.data, 0, t.n * 8);
+    fstat.instances += t.n;
+  }
+  function funload(t) {
+    t.live = false;
+    if (!t.n || t.off < 0) return;
+    // zeroed, so a draw run spanning the hole draws nothing there
+    if (fzero.length < t.n * 8) fzero = new Float32Array(t.n * 8);
+    gl.bindBuffer(gl.ARRAY_BUFFER, fpoolBuf); gl.bufferSubData(gl.ARRAY_BUFFER, t.off * 32, fzero, 0, t.n * 8);
+    frelease(t.off, t.n); t.off = -1; fstat.instances -= t.n;
+  }
+  // which tiles the camera wants: each level's tiles where it's at least d0·2^level away, finer ones nearer
+  function fselect(cx, cy, cz) {
+    fwant.length = 0; fqueue.length = 0;
+    const dyc = Math.max(0, cy - 720), top = FF.levels - 1, S2 = FT0 << top, E = FF.end;
+    const visit = (k, i, j) => {
+      const S = FT0 << k, dx = Math.max(i * S - cx, 0, cx - (i + 1) * S), dz = Math.max(j * S - cz, 0, cz - (j + 1) * S);
+      const d = Math.hypot(dx, dz, dyc);
+      if (d > E) return;
+      if (k > 0 && d < FF.d0 * (1 << k)) { for (let q = 0; q < 4; q++) visit(k - 1, i * 2 + (q & 1), j * 2 + (q >> 1)); return; }
+      const key = fkey(k, i, j), t = ftiles.get(key);
+      fwant.push(key);
+      if (!t) fqueue.push(d / (1 + k * 0.5), k, i, j); // coarse tiles first at equal distance
+    };
+    for (let i = Math.floor((cx - E) / S2); i <= Math.floor((cx + E) / S2); i++)
+      for (let j = Math.floor((cz - E) / S2); j <= Math.floor((cz + E) / S2); j++) visit(top, i, j);
+  }
+  // the tiles to draw: every wanted tile that's ready, and for one that isn't, its nearest ready ancestor (until it is:
+  // an ancestor's plants are a subset of its descendants', so the overlap only draws some trees twice for a moment)
+  const factive = new Set();
+  function fresolve() {
+    const act = new Set();
+    for (const key of fwant) {
+      if (ftiles.has(key)) { act.add(key); continue; }
+      let k = Math.floor(key / 67108864), i = Math.floor(key / 8192) % 8192 - 4096, j = key % 8192 - 4096;
+      // moving away, its four children are usually still there (a superset of its plants): keep them until it's ready
+      if (k > 0) {
+        const ch = [0, 1, 2, 3].map(q => fkey(k - 1, i * 2 + (q & 1), j * 2 + (q >> 1)));
+        if (ch.every(c => ftiles.has(c))) { for (const c of ch) act.add(c); continue; }
+      }
+      while (k < FF.levels - 1) { k++; i = Math.floor(i / 2); j = Math.floor(j / 2); const a = fkey(k, i, j); if (ftiles.has(a)) { act.add(a); break; } }
+    }
+    for (const key of factive) if (!act.has(key)) { const t = ftiles.get(key); if (t && t.live) funload(t); }
+    for (const key of act) { const t = ftiles.get(key); if (!t.live) fupload(t); t.used = fFrame; }
+    factive.clear(); for (const k of act) factive.add(k);
+  }
+  let fcx = 1e9, fcz = 1e9, fcy = 0, fdirty = true;
+  function farUpdate(cx, cy, cz, budgetMs) {
+    fFrame++;
+    const t0 = performance.now();
+    if (fdirty || Math.abs(cx - fcx) > 32 || Math.abs(cz - fcz) > 32 || Math.abs(cy - fcy) > 32) {
+      fcx = cx; fcy = cy; fcz = cz; fdirty = false;
+      fselect(cx, cy, cz);
+      // nearest first
+      const order = [];
+      for (let q = 0; q < fqueue.length; q += 4) order.push(q);
+      order.sort((a, b) => fqueue[a] - fqueue[b]);
+      fqueue.order = order;
+      fresolve();
+    }
+    let made = 0;
+    const order = fqueue.order || [];
+    while (order.length && (made === 0 || performance.now() - t0 < budgetMs)) {
+      const q = order.shift(), k = fqueue[q + 1], i = fqueue[q + 2], j = fqueue[q + 3], key = fkey(k, i, j);
+      if (ftiles.has(key)) continue;
+      const tg = performance.now();
+      ftiles.set(key, genFarTile(k, i, j));
+      fstat.tileMax = Math.max(fstat.tileMax, performance.now() - tg);
+      made++;
+    }
+    if (made) fresolve();
+    // cache: forget the least recently used tiles that aren't drawn
+    if (ftiles.size > 2600) {
+      const old = [...ftiles].filter(([k, t]) => !t.live).sort((a, b) => a[1].used - b[1].used);
+      for (let q = 0; q < old.length - 2000; q++) ftiles.delete(old[q][0]);
+    }
+    fstat.tiles = ftiles.size; fstat.active = factive.size; fstat.gen = made; fstat.queue = order.length; fstat.ms = performance.now() - t0;
+  }
+
+  const FP = program(GLSL_COMMON + IMP_GLSL + `
+layout(location=0) in vec2 aC; layout(location=1) in vec4 iA; layout(location=2) in vec4 iB;
+uniform mat4 uVP; uniform vec4 uImp[${NK}], uCyl[${NK * 2}];
+uniform vec4 uBand[2];  // trees, bushes: (meshes' reach, their cross-fade width, thinning distance d0, end)
+uniform vec4 uSph;      // shadow pass: the cascade's sphere (world centre, radius)
+out vec3 vUV0; out vec3 vUV1; out vec3 vUV2; flat out vec3 vW; out vec3 vRel; flat out vec4 vRotT; out float vLo;
+void cull(){ gl_Position = vec4(2.0, 2.0, 2.0, 1.0); vLo = 2.0; }
+vec3 frameUV(vec2 f, vec3 pl, float R, float base){
+  vec3 fx, fy; frameBasis(frameDir(f), fx, fy);
+  return vec3(vec2(dot(pl, fx), dot(pl, fy))/(2.0*R) + 0.5, base + f.y*IG + f.x);
+}
+void main(){
+  vUV0 = vec3(0.0); vUV1 = vec3(0.0); vUV2 = vec3(0.0); vW = vec3(0.0); vRel = vec3(0.0); vRotT = vec4(0.0);
+  float s0 = iA.w;
+  int k = int(iB.w + 0.5);
+  vec4 band = k >= 9 ? uBand[1] : uBand[0];
+  float d = length(iA.xyz - uCam);
+  // thinning: kept while its rank is under (d0/d)², shrinking away over the last stretch; widened by d/d0 beyond d0
+  float f = min(1.0, band.z*band.z/(d*d)), r = iB.z;
+  float keep = clamp((f - r)/(0.25*f), 0.0, 1.0)*clamp((band.w - d)/(band.w*0.1), 0.0, 1.0);
+  float lo = clamp((band.x - d)/band.y, 0.0, 1.0);
+  bool sh = uShadowPass > 0.5;
+  if (s0 <= 0.0 || keep <= 0.0 || lo >= 1.0 || (sh && distance(iA.xyz, uSph.xyz) > uSph.w + 40.0)) { cull(); return; }
+  float sw = max(1.0, d/band.z), shh = sqrt(sw), sc = s0*keep;
+  vec4 K = uImp[k], C = uCyl[k*2];
+  float y1 = uCyl[k*2 + 1].x, c = cos(iB.x), s = sin(iB.x);
+  vec3 ks = vec3(K.x*sw, K.y*shh, K.z*sw)*sc, cs = vec3(C.x*sw, 0.5*(C.y + y1)*shh, C.z*sw)*sc;
+  vec3 sph = iA.xyz + vec3(ks.x*c + ks.z*s, ks.y, -ks.x*s + ks.z*c);   // bounding sphere's centre: the frames' origin
+  vec3 cyl = iA.xyz + vec3(cs.x*c + cs.z*s, cs.y, -cs.x*s + cs.z*c);   // bounding cylinder's centre
+  float rh = C.w*sw*sc, hy = 0.5*(y1 - C.y)*shh*sc;
+  vec3 dv = sh ? uSun : normalize(uCam - cyl);
+  // the quad: the cylinder's outline seen along dv (its axis foreshortened, its caps seen as ellipses)
+  float hh = hy*sqrt(max(1.0 - dv.y*dv.y, 0.0)) + rh*abs(dv.y), hw = rh;
+  if (!sh) { vec4 cp = uVP*vec4(cyl - uCam, 1.0); float m = max(hw, hh)*1.5 + cp.w*0.05; if (cp.w < -m || abs(cp.x) > cp.w + m || abs(cp.y) > cp.w + m) { cull(); return; } }
+  vec3 rv = cross(vec3(0.0, 1.0, 0.0), dv); rv = dot(rv, rv) < 1e-6 ? vec3(1.0, 0.0, 0.0) : normalize(rv);
+  vec3 uv = cross(dv, rv);
+  vec3 Pw = cyl + aC.x*hw*rv + aC.y*hh*uv, P = Pw - sph;
+  // the view direction and the corner in the plant's own frame (unrotated, unscaled, from the sphere's centre)
+  vec3 dl = vec3(dv.x*c - dv.z*s, dv.y, dv.x*s + dv.z*c);
+  vec3 pl = vec3(P.x*c - P.z*s, P.y, P.x*s + P.z*c)/(sc*vec3(sw, shh, sw));
+  // the three frames around the view direction on the grid, and their weights (the shadow pass takes the nearest)
+  vec2 g = (hemiOct(dl)*0.5 + 0.5)*(IG - 1.0), i0 = min(floor(g), vec2(IG - 2.0)), fr = g - i0;
+  float base = float(k)*IG*IG;
+  if (sh) { vUV0 = frameUV(i0 + step(0.5, fr), pl, K.w, base); vW = vec3(1.0, 0.0, 0.0); }
+  else {
+    vec2 f0, f1, f2;
+    if (fr.x + fr.y <= 1.0) { f0 = i0; f1 = i0 + vec2(1.0, 0.0); f2 = i0 + vec2(0.0, 1.0); vW = vec3(1.0 - fr.x - fr.y, fr.x, fr.y); }
+    else { f0 = i0 + 1.0; f1 = i0 + vec2(0.0, 1.0); f2 = i0 + vec2(1.0, 0.0); vW = vec3(fr.x + fr.y - 1.0, 1.0 - fr.x, 1.0 - fr.y); }
+    vUV0 = frameUV(f0, pl, K.w, base); vUV1 = frameUV(f1, pl, K.w, base); vUV2 = frameUV(f2, pl, K.w, base);
+  }
+  vRotT = vec4(c, s, iB.y, rh);
+  vLo = lo;
+  vRel = Pw - uCam;
+  gl_Position = uVP*vec4(vRel, 1.0);
+}`, GLSL_COMMON + MESH.LIGHT + `
+uniform mediump sampler2DArray uIA, uIN; uniform float uA2C;
+in vec3 vUV0; in vec3 vUV1; in vec3 vUV2; flat in vec3 vW; in vec3 vRel; flat in vec4 vRotT; in float vLo; out vec4 o;
+// sun visibility for an impostor pixel: one hardware-filtered tap of the finest cascade that holds it, looked up a
+// crown's radius toward the sun (the quad is flat: without the offset half of every tree would sit behind its own
+// sun-facing caster), times the cloud shadow
+float impShadow(vec3 rel, float rh){
+  float cl = cloudShadow(rel);
+  if (uShadowP.z < 0.5 || uShadowP.x < 1.0) return cl;
+  vec3 p = rel + uSun*rh;
+  int nc = int(uShadowP.x);
+  for (int i = 0; i < 5; i++) {
+    if (i >= nc) break;
+    vec3 sc = (uCasM[i]*vec4(p + uCasP[i].xyz, 1.0)).xyz*0.5 + 0.5;
+    vec2 e = abs(sc.xy - 0.5);
+    if (max(e.x, e.y) < 0.485 && sc.z < 1.0) return texture(uShadowMap, vec4(sc.xy, float(i), sc.z))*cl;
+  }
+  return cl;
+}
+void main(){
+  if (bayer4(gl_FragCoord.xy) < vLo) discard;       // the mesh LOD draws the rest of the cross-fade
+  if (uShadowPass > 0.5) { if (texture(uIA, vUV0).a < 0.5) discard; o = vec4(0.0); return; }
+  // a sharper mip near the meshes' handoff (the frames' blend and the mip chain soften what the mid LOD draws crisply)
+  float mb = -0.7*(1.0 - smoothstep(400.0, 1200.0, length(vRel)));
+  vec4 A = texture(uIA, vUV0, mb)*vW.x + texture(uIA, vUV1, mb)*vW.y + texture(uIA, vUV2, mb)*vW.z;
+  if (A.a < (uA2C < 0.5 ? 0.5 : 0.02)) discard;
+  vec4 N = texture(uIN, vUV0, mb)*vW.x + texture(uIN, vUV1, mb)*vW.y + texture(uIN, vUV2, mb)*vW.z;
+  vec3 col = pow(A.rgb/A.a, vec3(1.0/2.2)), nl = normalize(N.rgb/A.a*2.0 - 1.0); // back to the authored (sRGB) colour
+  float ao = N.a/A.a, c = vRotT.x, s = vRotT.y, tint = vRotT.z;
+  vec3 n = vec3(nl.x*c + nl.z*s, nl.y, -nl.x*s + nl.z*c);
+  float fol = smoothstep(-0.02, 0.06, col.g - col.r);  // leaves are green, bark brown or white
+  col *= mix(vec3(0.88, 0.93, 0.98), vec3(1.1, 1.05, 0.86), fract(tint));
+  if (tint > 1.5) col = mix(col, dot(col, vec3(0.35, 0.55, 0.1))*vec3(1.95, 1.5, 0.42), 0.5*fol);
+  vec3 v = normalize(vRel);
+  gShadow = impShadow(vRel, vRotT.w);
+  vec3 lit = lightMesh(toLin(col), n, v, ao, 0.0, fol*0.9);
+  o = vec4(fogIt(lit, vRel), A.a);
+}`);
+  const FU = FP.u;
+  const fvao = gl.createVertexArray();
+  gl.bindVertexArray(fvao);
+  gl.bindBuffer(gl.ARRAY_BUFFER, buffer(new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1])));
+  gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 8, 0);
+  gl.bindBuffer(gl.ARRAY_BUFFER, fpoolBuf);
+  for (const [loc, off] of [[1, 0], [2, 16]]) { gl.enableVertexAttribArray(loc); gl.vertexAttribPointer(loc, 4, gl.FLOAT, false, 32, off); gl.vertexAttribDivisor(loc, 1); }
+  gl.bindVertexArray(null);
+  // Draw runs: the ranges of the drawn tiles that touch the view frustum (or a shadow cascade's sphere), sorted and merged
+  // across small holes. Besides saving the vertex work, this keeps each pass well under ~2^18 instances: past that, the
+  // same draws into a depth-only shadow target cost ~10× more on an RX 7900 XT (ANGLE/D3D11)
+  const fplanes = new Float64Array(24), runs = [];
+  function farRuns(shadow, cx, cy, cz) {
+    let sp = null;
+    if (shadow) sp = SHADOW.sphere(shadow - 1);
+    else {
+      const m = GLX.env.vp;
+      for (let p = 0; p < 6; p++) {
+        const row = p >> 1, sg = (p & 1) ? -1 : 1;
+        fplanes[p * 4] = m[3] + sg * m[row]; fplanes[p * 4 + 1] = m[7] + sg * m[4 + row];
+        fplanes[p * 4 + 2] = m[11] + sg * m[8 + row]; fplanes[p * 4 + 3] = m[15] + sg * m[12 + row];
+      }
+    }
+    const vis = [], M = 60; // margin: the widest a thinned, widened crown can reach past its tile
+    for (const key of factive) {
+      const t = ftiles.get(key);
+      if (!t.live || !t.n || t.off < 0) continue;
+      const x0 = t.x0 - M, x1 = t.x0 + t.S + M, z0 = t.z0 - M, z1 = t.z0 + t.S + M;
+      if (sp) {
+        const dx = Math.max(x0 - sp[0], 0, sp[0] - x1), dy = Math.max(t.y0 - sp[1], 0, sp[1] - t.y1), dz = Math.max(z0 - sp[2], 0, sp[2] - z1);
+        if (dx * dx + dy * dy + dz * dz > (sp[3] + 40) * (sp[3] + 40)) continue;
+      } else {
+        let out = false;
+        for (let p = 0; p < 5 && !out; p++) { // the far plane never clips a 10 km forest
+          const a = fplanes[p * 4], b = fplanes[p * 4 + 1], c = fplanes[p * 4 + 2], d = fplanes[p * 4 + 3];
+          out = a * ((a > 0 ? x1 : x0) - cx) + b * ((b > 0 ? t.y1 : t.y0) - cy) + c * ((c > 0 ? z1 : z0) - cz) + d < 0;
+        }
+        if (out) continue;
+      }
+      vis.push(t);
+    }
+    vis.sort((a, b) => a.off - b.off);
+    runs.length = 0;
+    let drawn = 0;
+    for (const t of vis) {
+      const L = runs.length;
+      if (L && t.off - (runs[L - 2] + runs[L - 1]) < 2048) runs[L - 1] = t.off + t.n - runs[L - 2];
+      else runs.push(t.off, t.n);
+    }
+    for (let q = 1; q < runs.length; q += 2) drawn += runs[q];
+    if (!shadow) { fstat.drawn = drawn; fstat.runs = runs.length / 2; }
+  }
+  // shadow: 0 view pass, 1+ the shadow cascade's index + 1
+  function drawFar(shadow) {
+    if (!FF.on || !fstat.instances) return;
+    const cp = GLX.env.cam;
+    farRuns(shadow, cp[0], cp[1], cp[2]);
+    if (!runs.length) return;
+    gl.useProgram(FP.p); setEnv(FP);
+    gl.activeTexture(gl.TEXTURE0 + UNIT_IA); gl.bindTexture(gl.TEXTURE_2D_ARRAY, impAlb);
+    gl.activeTexture(gl.TEXTURE0 + UNIT_IN); gl.bindTexture(gl.TEXTURE_2D_ARRAY, impNrm); gl.activeTexture(gl.TEXTURE0);
+    gl.uniform1i(FU.uIA, UNIT_IA); gl.uniform1i(FU.uIN, UNIT_IN);
+    gl.uniform4fv(FU.uImp, impK); gl.uniform4fv(FU.uCyl, impC);
+    gl.uniform4fv(FU.uBand, [FF.treeFrom || TREE.R2, TREE.W, FF.d0, FF.end, FF.bushFrom || SHRUB.R2, SHRUB.W, FF.bushD0, FF.bushEnd]);
+    if (FU.uSpec) gl.uniform1f(FU.uSpec, 0.035);
+    if (FU.uNoFog) gl.uniform1f(FU.uNoFog, 0);
+    const a2c = FF.a2c && !shadow && typeof POST !== 'undefined' && POST.targets && POST.targets.samples > 1;
+    gl.uniform1f(FU.uA2C, a2c ? 1 : 0);
+    if (shadow) { const sp = SHADOW.sphere(shadow - 1); gl.uniform4f(FU.uSph, sp[0], sp[1], sp[2], sp[3]); }
+    gl.disable(gl.CULL_FACE);
+    if (a2c) { gl.enable(gl.SAMPLE_ALPHA_TO_COVERAGE); gl.colorMask(true, true, true, false); }
+    gl.bindVertexArray(fvao); gl.bindBuffer(gl.ARRAY_BUFFER, fpoolBuf);
+    for (let q = 0; q < runs.length; q += 2) {
+      const o = runs[q];
+      gl.vertexAttribPointer(1, 4, gl.FLOAT, false, 32, o * 32); gl.vertexAttribPointer(2, 4, gl.FLOAT, false, 32, o * 32 + 16);
+      gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, runs[q + 1]);
+    }
+    gl.bindVertexArray(null);
+    if (a2c) { gl.disable(gl.SAMPLE_ALPHA_TO_COVERAGE); gl.colorMask(true, true, true, true); }
+  }
+
   // ───── near-camera grass & wildflowers ─────
-  const GT = 32, GC = 1.25, GNC = GT / GC, GGS = 4, GGN = GT / GGS + 1, GR = 75, GRASS_CAP = 16000;
+  // (view range, ticket 14) full density to GR_FULL, thinning and widening out to GR (it was 75 m); each tile's lists are
+  // sorted by seed, so a rebuild copies just the prefix its distance can keep
+  const GT = 32, GC = 1.25, GNC = GT / GC, GGS = 4, GGN = GT / GGS + 1, GRASS_CAP = 40000, GTR_MAX = Math.ceil((200 + 12) / GT);
+  let GR = 200, GR_FULL = 60, GTR = GTR_MAX; // (Medium, Low: 75 m, all full density)
   const gtiles = new Map(), ggrid = new Float64Array(GGN * GGN), gfm = new Float64Array(GGN * GGN), gpat = new Float64Array(GGN * GGN);
   const gspc = new Float64Array(GGN * GGN), gtall = new Float64Array(GGN * GGN);
   const gscratch = [];
   for (let k = 0; k < NG; k++) gscratch.push(new Float32Array(GNC * GNC * 8));
   const gcount = new Int32Array(NG);
   const GB = makeBatch(GRASS_CAP, GKINDS);
-  const gneed = { n: 0, key: new Float64Array(128), i: new Int32Array(128), j: new Int32Array(128), d: new Float32Array(128), ti: 1e9, tj: 1e9 };
+  const GNM = (2 * GTR_MAX + 1) ** 2;
+  const gneed = { n: 0, key: new Float64Array(GNM), i: new Int32Array(GNM), j: new Int32Array(GNM), d: new Float32Array(GNM), ti: 1e9, tj: 1e9 };
   const glast = { x: 1e9, y: 0, z: 0, f: [0, 0, 0], active: false, dirty: true, count: 0 };
+  function sortBySeed(src, n) { // n instances (8 floats each), ascending by seed (float 6)
+    const idx = new Int32Array(n);
+    for (let q = 0; q < n; q++) idx[q] = q;
+    idx.sort((a, b) => src[a * 8 + 6] - src[b * 8 + 6]);
+    const out = new Float32Array(n * 8);
+    for (let q = 0; q < n; q++) out.set(src.subarray(idx[q] * 8, idx[q] * 8 + 8), q * 8);
+    return out;
+  }
   function genGrassTile(ti, tj) {
     const x0 = ti * GT, z0 = tj * GT;
     let gmin = 1e9, gmax = -1e9;
@@ -1149,7 +1622,7 @@ void main(){
         const fm = bil(gfm);
         if (fm > 0.55 || r < fm * 1.8) continue;
         const h = bil(ggrid);
-        if (h < 3.2 + hs(gx, gz, 34) * 1.5 || h > 600 + hs(gx, gz, 42) * 30 || slopeNy(ggrid) < 0.8 || occupied(x, z, 0.3)) continue;
+        if (h < 3.2 + hs(gx, gz, 34) * 1.5 || h > 600 + hs(gx, gz, 42) * 30 || slopeNy(ggrid) < 0.8 || inLake(x, z, h, 0.4) || occupied(x, z, 0.3)) continue;
         let k;
         const patch = ss(0.5, 0.78, bil(gpat));
         if (hs(gx, gz, 35) < patch * 0.5 + 0.03) {
@@ -1166,19 +1639,19 @@ void main(){
     }
     const lists = [];
     let n = 0;
-    for (let k = 0; k < NG; k++) if (gcount[k]) { lists.push(k, gscratch[k].slice(0, gcount[k] * 8)); n += gcount[k]; }
-    return { x0, z0, lists, n, yMin: gmin - 1, yMax: gmax + 1.2, vis: 0 };
+    for (let k = 0; k < NG; k++) if (gcount[k]) { lists.push(k, sortBySeed(gscratch[k], gcount[k])); n += gcount[k]; }
+    return { x0, z0, lists, n, yMin: gmin - 1, yMax: gmax + 1.2, vis: 0, keep: new Int32Array(lists.length / 2) };
   }
   function grassUpdate(cam, agl) {
     const cx = cam.pos[0], cy = cam.pos[1], cz = cam.pos[2];
-    glast.active = agl < 110;
+    glast.active = agl < GR + 20;
     if (!glast.active) return;
     const ti = Math.floor(cx / GT), tj = Math.floor(cz / GT);
     if (ti !== gneed.ti || tj !== gneed.tj) {
       gneed.ti = ti; gneed.tj = tj;
       const R = GR + 12;
       let n = 0;
-      for (let i = ti - 4; i <= ti + 4; i++) for (let j = tj - 4; j <= tj + 4; j++) {
+      for (let i = ti - GTR; i <= ti + GTR; i++) for (let j = tj - GTR; j <= tj + GTR; j++) {
         const dx = Math.max(i * GT - cx, 0, cx - (i + 1) * GT), dz = Math.max(j * GT - cz, 0, cz - (j + 1) * GT), d = Math.hypot(dx, dz);
         if (d < R) { needTmp.d[n] = d; needTmp.i[n] = i; needTmp.j[n] = j; needIdx[n] = n; n++; }
       }
@@ -1204,9 +1677,19 @@ void main(){
       if (!t) continue;
       t.vis = 0;
       if (!t.n || !boxVisible(t.x0, t.yMin, t.z0, t.x0 + GT, t.yMax, t.z0 + GT, cx, cy, cz, 12)) continue;
-      if (tot + t.n > GRASS_CAP) break;
-      t.vis = 1; tot += t.n;
-      for (let l = 0; l < t.lists.length; l += 2) B.n[t.lists[l]] += t.lists[l + 1].length >> 3;
+      // the seeds this tile's nearest point can keep (a margin for the camera's travel until the next rebuild)
+      const dx = Math.max(t.x0 - cx, 0, cx - t.x0 - GT), dz = Math.max(t.z0 - cz, 0, cz - t.z0 - GT), dy = Math.max(t.yMin - cy, 0, cy - t.yMax);
+      const dn = Math.max(Math.hypot(dx, dy, dz) - 10, 1), fk = Math.min(1, (GR_FULL * GR_FULL) / (dn * dn));
+      let m = 0;
+      for (let l = 0; l < t.lists.length; l += 2) {
+        const arr = t.lists[l + 1], n = arr.length >> 3;
+        let c = 0;
+        while (c < n && arr[c * 8 + 6] < fk) c++;
+        t.keep[l >> 1] = c; m += c;
+      }
+      if (tot + m > GRASS_CAP) break;
+      t.vis = 1; tot += m;
+      for (let l = 0; l < t.lists.length; l += 2) B.n[t.lists[l]] += t.keep[l >> 1];
     }
     let o = 0;
     for (let s = 0; s < NG; s++) { B.off[s] = o; B.cur[s] = o; o += B.n[s]; }
@@ -1214,13 +1697,23 @@ void main(){
     for (let q = 0; q < gneed.n; q++) {
       const t = gtiles.get(gneed.key[q]);
       if (!t || !t.vis) continue;
-      for (let l = 0; l < t.lists.length; l += 2) { const k = t.lists[l], arr = t.lists[l + 1]; B.data.set(arr, B.cur[k] * 8); B.cur[k] += arr.length >> 3; }
+      for (let l = 0; l < t.lists.length; l += 2) { const k = t.lists[l], c = t.keep[l >> 1]; B.data.set(t.lists[l + 1].subarray(0, c * 8), B.cur[k] * 8); B.cur[k] += c; }
     }
     uploadBatch(B);
     glast.count = o;
-    if (gtiles.size > 400) for (const [k, t] of gtiles) if (Math.abs(t.x0 - cx) > 300 || Math.abs(t.z0 - cz) > 300) gtiles.delete(k);
+    if (gtiles.size > 900) for (const [k, t] of gtiles) if (Math.abs(t.x0 - cx) > GR + 150 || Math.abs(t.z0 - cz) > GR + 150) gtiles.delete(k);
   }
 
+  // High: the far forest, and grass to 200 m; Medium and Low keep the old reach (far meshes to 1.3 km, grass 75 m)
+  // until they're derived again (view range, ticket 14)
+  function setRange(high) {
+    high = !!high;
+    if (high === FF.on && FAR_MAX === (high ? Math.max(TREE.R2, SHRUB.R2) + MARGIN : FAR_MESH)) return;
+    FF.on = high;
+    FAR_MAX = high ? Math.max(TREE.R2, SHRUB.R2) + MARGIN : FAR_MESH;
+    GR = high ? 200 : 75; GR_FULL = high ? 60 : 75; GTR = Math.ceil((GR + 12) / GT);
+    need.ti = need.tj = 1e9; gneed.ti = gneed.tj = 1e9; tilesDirty = true; glast.dirty = true;
+  }
   // ───── per-frame ─────
   let camAgl = 0, gWash = 0;
   function update(dt, ctx) {
@@ -1242,14 +1735,23 @@ void main(){
     const g = ctx.g;
     gWash = g && g.live !== false ? clamp(1 - (g.agl - 1) / 9, 0, 1) * clamp((g.V || 0) / 25, 0, 1) * 0.55 : 0;
     evict(cx, cz);
+    if (FF.on) farUpdate(cx, cy, cz, fstat.instances ? 1.5 : 6); // ms of tile generation per frame (more while nothing is in)
     last.ms = performance.now() - t0;
   }
   function drawOpaque(ctx) {
-    if (!WB.total && !(glast.active && GB.total)) return;
-    beginDraw();
-    drawTrees(WB, false);
-    if (glast.active && GB.total && DBG.grass && !(ctx.shadow >= 0)) { const g = ctx.g; drawGrass(GB, g.pos[0], g.pos[1], g.pos[2], gWash); }
-    gl.bindVertexArray(null);
+    const sh = ctx.shadow >= 0;
+    if (WB.total || (glast.active && GB.total)) {
+      beginDraw();
+      drawTrees(WB, false);
+      if (glast.active && GB.total && DBG.grass && !sh) { const g = ctx.g; drawGrass(GB, g.pos[0], g.pos[1], g.pos[2], gWash); }
+      gl.bindVertexArray(null);
+    }
+    // impostors: in the view, and in the shadow cascades that reach past the meshes
+    if (!sh) drawFar(0);
+    else {
+      const sp = SHADOW.sphere(ctx.shadow), p = ctx.cam.pos;
+      if (FF.shadows && Math.hypot(sp[0] - p[0], sp[1] - p[1], sp[2] - p[2]) + sp[3] > SHRUB.R2 - SHRUB.W) drawFar(ctx.shadow + 1);
+    }
   }
 
   // crash test: trunk cylinders and the dense canopy core of nearby trees (only the tile(s) around the point)
@@ -1344,8 +1846,9 @@ void main(){
   }
 
   return {
-    name: 'flora', replacesTrees: true, update, drawOpaque, hit, preview, KINDS, DBG, _gen: { genTile, genGrassTile, rebuild },
-    stats: () => ({ tiles: tiles.size, needed: need.n, near: last.lod[0], mid: last.lod[1], far: last.lod[2], grass: glast.active ? glast.count : 0, grassTiles: gtiles.size, ms: last.ms, gen: last.gen }),
+    name: 'flora', replacesTrees: true, update, drawOpaque, hit, preview, KINDS, DBG, setRange, _gen: { genTile, genGrassTile, rebuild, genFarTile },
+    stats: () => ({ tiles: tiles.size, needed: need.n, near: last.lod[0], mid: last.lod[1], far: last.lod[2], grass: glast.active ? glast.count : 0, grassTiles: gtiles.size, ms: last.ms, gen: last.gen, farForest: Object.assign({ free: ffree.length }, fstat) }),
+    FF,
     tris: () => KINDS.map(K => `${K.name}: ${K.tris.join('/')}`).concat(GKINDS.map((m, i) => `grass${i}: ${m.count / 3}`)),
   };
 })();

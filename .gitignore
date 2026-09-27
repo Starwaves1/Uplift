@@ -19,3 +19,6 @@ assets/src/
 assets/preview/
 # review renders saved by tools/shot_server.py
 shots/
+# alternative island exports for side-by-side review (?island=NAME), and agents' git worktrees
+islands/
+.claude/worktrees/

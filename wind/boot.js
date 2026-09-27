@@ -55,7 +55,10 @@
   try {
     say('Loading the island…');
     const t0 = performance.now();
-    const [isl, maps] = await Promise.all([loadIsland('island.bin'), loadMaps('island_maps.bin').catch(e => { console.warn('island maps unavailable:', e); return null; })]);
+    // ?island=NAME loads an alternative island from islands/NAME/ (for comparing versions); default: next to the page
+    const name = new URLSearchParams(location.search).get('island'), dir = name && /^[\w-]+$/.test(name) ? `islands/${name}/` : '';
+    const [isl, maps] = await Promise.all([loadIsland(dir + 'island.bin'),
+      loadMaps(dir + 'island_maps.bin').catch(() => loadMaps('island_maps.bin')).catch(e => { console.warn('island maps unavailable:', e); return null; })]);
     window.ISLAND_DATA = isl; window.ISLAND_MAPS = maps;
     console.log('island', window.ISLAND_DATA.n + '²', Math.round(performance.now() - t0) + ' ms');
   } catch (e) {

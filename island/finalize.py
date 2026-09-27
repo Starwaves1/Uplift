@@ -22,12 +22,10 @@ g = lambda t: t.double().cpu().numpy()
 rng = np.random.default_rng(5)
 km = lambda pts: [(x * 1000, y * 1000) for x, y in pts]
 
-# ── fjord lines from the coarse landscape (the drainage is already there) ──
 h0 = np.load(f'{OUT}/h_{tag}_{N0}.npy').astype(np.float64)
-D0 = ds.Design(N0)
-fj = passes.trace_fjords(h0, dx0, g(D0.w_nord), lem)
-lap(f'fjord lines: {len(fj)}')
-del D0
+# where the land stood before the ice ages (glaciate.py): the glaciers' drowned troughs there keep their depth
+l0 = f'{OUT}/land0_{tag}_{N0}.npy'
+land0 = (F.interpolate(torch.tensor(np.load(l0).astype(np.float32))[None, None], size=(N, N), mode='nearest')[0, 0].numpy() > 0.5) if os.path.exists(l0) else None
 
 # ── refine ──
 Ht = F.interpolate(torch.tensor(h0, device=fx.dev, dtype=torch.float32)[None, None], size=(N, N), mode='bicubic', align_corners=False)[0, 0]
@@ -47,9 +45,6 @@ h, dv, Fv, Wv = passes.trough(h, dx, km(ds.VALLEY), ds.VALLEY_FLOOR, [w * 1000 f
                               wall=0.022, power=1.5, soft=30.0, rough=g(fx.fbm(N, 40, 3, 71)) * 25, reach=4500)
 floor_mask = (dv < Wv / 2) & (dv < 4500)
 lap('valley trough')
-for P in fj:
-    h = passes.carve_fjord(h, dx, P)
-lap('fjords')
 vs = h[g(D.volc_r) < 2.0].max()
 h = passes.caldera(h, dx, ds.VOLCANO[0] * 1000, ds.VOLCANO[1] * 1000, 1350, vs - 430)
 lap(f'caldera (summit {vs:.0f})')
@@ -89,7 +84,10 @@ retreat = 90 + 260 * np.clip(0.5 + 0.6 * g(fx.fbm(N, 60, 3, 82)), 0, 1)
 h_pre_coast = h.copy()
 h, dcoast, stacks = passes.coast(h, dx, style, retreat, rng, face=4.5, platform=-5.0, stacks=45)
 lap(f'coast: {len(stacks)} stacks')
+h_carved = h
 h = passes.bathymetry(h, dx, g(fx.fbm(N, 20, 4, 91)))
+if land0 is not None:
+    h = np.where(land0 & (h_carved < h), h_carved, h)
 lap('sea floor')
 
 # ── lakes: water in the closed basins (the caldera, tarns, hollows in the valley floors) ──

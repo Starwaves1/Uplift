@@ -14,7 +14,7 @@ from PIL import Image
 from paths import WORK
 
 Q = 0.1            # m per step
-OFF = -400.0       # height at step 0
+OFF = -1500.0      # height at step 0 (65535 steps then reach 5053 m; glacial fjords cut well below -400 m)
 
 
 def encode_heights(h):

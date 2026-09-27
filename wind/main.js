@@ -135,6 +135,32 @@
   const spawnAt = at ? [at[0], at[1], at[2] === undefined ? bestDir : at[2], at[3]] : [start[0], start[1], start.length > 2 ? start[2] : bestDir, 130];
   FLIGHT.spawn(...spawnAt);
   if (at) FLIGHT.setHome(spawnAt);
+  // spectator: ?fly — a free camera for looking round the island (W/S along the view, A/D sideways, Space/E up,
+  // Shift/Q down, wheel changes speed, Ctrl ×4); the glider stays parked and hidden
+  const spec = new URLSearchParams(location.search).has('fly')
+    ? { pos: [spawnAt[0], groundH(spawnAt[0], spawnAt[1]) + (at ? at[3] : 300), spawnAt[1]], yaw: spawnAt[2], pitch: -0.2, speed: 150, keys: new Set() } : null;
+  if (spec) {
+    hudOn = false;
+    window.addEventListener('keydown', e => { spec.keys.add(e.code); if (e.code === 'Space') e.preventDefault(); });
+    window.addEventListener('keyup', e => spec.keys.delete(e.code));
+    window.addEventListener('blur', () => spec.keys.clear());
+  }
+  function specMove(dt) {
+    const k = spec.keys, v = spec.speed * (k.has('ControlLeft') || k.has('ControlRight') ? 4 : 1) * dt, cp = Math.cos(spec.pitch);
+    const fw = [Math.sin(spec.yaw) * cp, Math.sin(spec.pitch), -Math.cos(spec.yaw) * cp], rt = [Math.cos(spec.yaw), 0, Math.sin(spec.yaw)];
+    const a = (k.has('KeyW') ? 1 : 0) - (k.has('KeyS') ? 1 : 0), b = (k.has('KeyD') ? 1 : 0) - (k.has('KeyA') ? 1 : 0);
+    const c = (k.has('Space') || k.has('KeyE') ? 1 : 0) - (k.has('ShiftLeft') || k.has('ShiftRight') || k.has('KeyQ') ? 1 : 0);
+    for (let i = 0; i < 3; i++) spec.pos[i] += (fw[i] * a + rt[i] * b + (i === 1 ? c : 0)) * v;
+    spec.pos[1] = Math.max(spec.pos[1], groundH(spec.pos[0], spec.pos[2]) + 2);
+  }
+  const sqy = [0, 0, 0, 1], sqp = [0, 0, 0, 1];
+  function specCam(aspect) {
+    Q.axis(sqy, 0, 1, 0, -spec.yaw); Q.axis(sqp, 1, 0, 0, spec.pitch); Q.mul(cam.q, sqy, sqp);
+    cam.pos[0] = spec.pos[0]; cam.pos[1] = spec.pos[1]; cam.pos[2] = spec.pos[2];
+    Q.rot(cam.r, cam.q, 1, 0, 0); Q.rot(cam.u, cam.q, 0, 1, 0); Q.rot(cam.f, cam.q, 0, 0, -1);
+    cam.fovY = settings.fov * Math.PI / 180; cam.near = 0.5;
+    cam.tanY = Math.tan(cam.fovY / 2); cam.tanX = cam.tanY * aspect;
+  }
   FLIGHT.resetAutopilot();
 
   function setScreen(s) {
@@ -202,6 +228,7 @@
   window.addEventListener('mousemove', e => {
     if (mode !== 'play' || paused) return;
     const dx = locked ? e.movementX : 0, dy = locked ? e.movementY : 0;
+    if (spec) { spec.yaw += dx * 0.0025; spec.pitch = clamp(spec.pitch - dy * 0.0025, -1.55, 1.55); return; }
     if (look.free && locked) {
       look.yaw = clamp(look.yaw - dx * 0.0035, -2.6, 2.6); look.pitch = clamp(look.pitch - dy * 0.0035, -1.2, 1.1);
       return;
@@ -221,12 +248,13 @@
     if (mode !== 'play' || paused) return;
     if (e.target.closest && e.target.closest('button, input, select, .panel')) return;
     if (!locked && !absMode) { lockPointer(); return; }
+    if (spec) return;
     if (e.button === 0) g.boost = true;
     if (e.button === 2) look.free = true;
   });
   window.addEventListener('mouseup', e => { if (e.button === 0) g.boost = false; if (e.button === 2) look.free = false; });
   window.addEventListener('contextmenu', e => e.preventDefault());
-  window.addEventListener('wheel', e => { if (mode === 'play' && !paused) { const m = e.deltaY > 0 ? 'chase' : 'fp'; if (m !== camMode) { camMode = m; FLIGHT.beginBlend(); } } }, { passive: true });
+  window.addEventListener('wheel', e => { if (spec) { spec.speed = clamp(spec.speed * (e.deltaY > 0 ? 0.8 : 1.25), 5, 3000); return; } if (mode === 'play' && !paused) { const m = e.deltaY > 0 ? 'chase' : 'fp'; if (m !== camMode) { camMode = m; FLIGHT.beginBlend(); } } }, { passive: true });
   window.addEventListener('keydown', e => {
     if (e.key === 'Escape' && !$('settings').hidden) { closeSettings(); return; }
     if (e.key === 'Escape' && mode === 'play') { if (paused) resume(); else pause(); }
@@ -319,7 +347,7 @@
     if (info.far) return;
     ctx.shadow = i;
     for (let k = 0; k < MODELS.length; k++) if (MODELS[k].drawOpaque) MODELS[k].drawOpaque(ctx);
-    if (info.near && mode === 'play') GLIDER.draw(g, cam, env.vp, false, 0);
+    if (info.near && mode === 'play' && !spec) GLIDER.draw(g, cam, env.vp, false, 0);
     ctx.shadow = -1;
   }
   let last = performance.now();
@@ -333,9 +361,12 @@
     const running = !paused;
 
     if (running) {
-      if (mode === 'title') FLIGHT.autopilot(dt);
-      else { g.stick[0] = dz(stick[0]); g.stick[1] = dz(stick[1]); }
-      FLIGHT.update(dt);
+      if (spec) specMove(dt);
+      else {
+        if (mode === 'title') FLIGHT.autopilot(dt);
+        else { g.stick[0] = dz(stick[0]); g.stick[1] = dz(stick[1]); }
+        FLIGHT.update(dt);
+      }
       env.time += dt;
       drift[0] += WORLD.WIND[0] * 0.6 * dt; drift[2] += WORLD.WIND[2] * 0.6 * dt;
     }
@@ -367,9 +398,10 @@
 
     if (canvas.clientWidth !== cssW || canvas.clientHeight !== cssH) resize(); // in case the ResizeObserver hasn't fired
     const aspect = canvas.width / canvas.height;
-    FLIGHT.updateCamera(dt, mode === 'title' ? 'cine' : camMode, settings.fov, aspect);
+    if (spec) specCam(aspect);
+    else FLIGHT.updateCamera(dt, mode === 'title' ? 'cine' : camMode, settings.fov, aspect);
     env.cam[0] = cam.pos[0]; env.cam[1] = cam.pos[1]; env.cam[2] = cam.pos[2];
-    const fp = mode === 'play' && camMode === 'fp';
+    const fp = mode === 'play' && camMode === 'fp' && !spec;
     M4.persp(proj, cam.fovY, aspect, fp ? 0.5 : 1.0, 26000);
     M4.view(view, cam.r, cam.u, cam.f);
     M4.mul(env.vp, proj, view);
@@ -404,7 +436,7 @@
     SCENERY.drawOpaque();
     for (let i = 0; i < MODELS.length; i++) if (MODELS[i].drawOpaque) { PROF.mark(MODELS[i].name); MODELS[i].drawOpaque(ctx); }
     PROF.mark('glider');
-    if (!fp) GLIDER.draw(g, cam, env.vp, false, g.jet);
+    if (!fp && !spec) GLIDER.draw(g, cam, env.vp, false, g.jet);
     PROF.mark('water');
     // the water reads the terrain below it from the depth buffer (resolved mid-frame; with MSAA off the depth texture
     // is the live attachment and can't be sampled, so Low keeps the simpler water)

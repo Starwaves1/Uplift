@@ -10,6 +10,12 @@ from paths import WORK
 
 PRE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'preview')
 S = 760
+# the rejected hand-drawn fjord thalwegs (km), kept here only to draw them
+REJECTED_FJORDS = [
+    [(10.0, 17.0), (12.0, 18.2), (13.8, 19.4), (15.6, 20.4), (17.6, 20.9), (19.6, 21.5), (21.0, 22.8), (21.8, 24.5), (22.4, 26.0), (22.9, 27.2)],
+    [(15.0, 12.4), (15.3, 15.0), (16.0, 16.9), (16.2, 18.6), (16.3, 20.4)],
+    [(28.6, 12.4), (27.8, 15.5), (26.9, 18.0), (27.1, 20.6), (26.6, 23.0), (25.4, 25.2), (24.8, 26.4)],
+]
 
 
 def panel(path, box, lines, title):
@@ -37,7 +43,7 @@ pl = (40.0, 30.0, 58.0, 48.0)
 a_lines = [causse.GORGE['pts'], causse.LOOP['pts']] + [s['pts'] for s in causse.SIDES + causse.RECULEES + causse.COMBES]
 b_lines = [plateau.GORGE] + [s['pts'] for s in plateau.SIDE + plateau.UPPER]
 panels = [
-    panel('h_q_4096.npy', nord, [f['pts'] for f in ds.FJORDS],
+    panel('h_q_4096.npy', nord, REJECTED_FJORDS,
           ['HAND-DRAWN fjords (you rejected these)', 'I drew the red lines, then carved a trough along each.']),
     panel('h_g1_1024.npy', nord, [],
           ['GENERATED fjords (the ice-age model)', 'Nobody drew these: ice followed the rivers\' valleys.']),

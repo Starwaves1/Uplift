@@ -532,10 +532,11 @@ void main(){
   float sh = sunShadowC(vRel, n, casc); // cascades × cloud shadows
   float sunVis = sh*(1.0 - gliderShadow(wp)*0.85*step(1.5, casc));
   vec3 ground = (uSunCol*max(uSun.y, 0.0) + uAmb)*col*0.5;
-  vec3 amb = mix(ground, uAmb, n.y*0.5 + 0.5);
+  vec3 skyL = islandSkyLight(wp.xz, col); // [ticket 20] baked sky light: 1 in the open, dimmer and cooler in valleys
+  vec3 amb = mix(ground, uAmb, n.y*0.5 + 0.5)*skyL; // [ticket 20] ×skyL
   float F = 0.02 + 0.98*pow(1.0 - max(dot(-normalize(vRel), n), 0.0), 5.0);
   float occ = clamp(1.0 + cav*0.6, 0.55, 1.0); // hollows see less sky
-  vec3 lit = col*(uSunCol*diff*sunVis + amb*occ) + skyCol(reflect(normalize(vRel), n))*F*(0.12 + 0.5*sn)*occ;
+  vec3 lit = col*(uSunCol*diff*sunVis + amb*occ) + skyCol(reflect(normalize(vRel), n))*F*(0.12 + 0.5*sn)*occ*islandSky(wp.xz); // [ticket 20] ×islandSky
   o = vec4(fogIt(lit, vRel), 1.0);
 }`;
   const TP = program(TVS, TFS);

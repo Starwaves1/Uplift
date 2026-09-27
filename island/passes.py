@@ -1,5 +1,5 @@
-"""Stage B passes: the dramatic, designed shaping on top of the eroded landscape — glacial troughs (the great valley and
-the fjords), the caldera, wave-cut coasts with stacks, and the sea floor. All grids are numpy float arrays in metres
+"""Stage B passes: the dramatic, designed shaping on top of the eroded landscape — the great valley's glacial
+trough, the caldera, wave-cut coasts with stacks, and the sea floor. All grids are numpy float arrays in metres
 (row = y south, col = x east), cell size dx metres.
 """
 import numpy as np
@@ -162,81 +162,6 @@ def fans(h, dx, A, floor_mask, d_floor, rng, amin=2.5e5, spacing=500.0, maxn=80)
         out[y0:y1, x0:x1] = np.where(m & (rr < R), np.maximum(blk, cone), blk)
         sites.append((cy, cx, R))
     return out, sites
-
-
-def trace_fjords(h, dx, w_nord, lem, max_fjords=3, min_len=4000.0, max_len=11000.0):
-    """Pick the biggest rivers reaching the Nordic coast and trace each upstream along its main stem; returns
-    smoothed thalweg polylines (metres), extended a kilometre out to sea, mouth first."""
-    n = h.shape[0]
-    sea = open_sea_mask(h)
-    fixed = (sea | np.pad(np.zeros((n - 2, n - 2), bool), 1, constant_values=True)).ravel()
-    A, rec, dist, st, hf = lem.flow(h.ravel(), fixed, n, dx)
-    A2 = A.reshape(n, n)
-    coastal = ndimage.binary_dilation(sea, iterations=1) & ~sea
-    cand = np.argwhere(coastal & (w_nord > 0.4) & (A2 > 2.5e6))
-    cand = cand[np.argsort(-A2[cand[:, 0], cand[:, 1]])]
-    # main-stem donor of every cell: the upstream neighbour with the largest area
-    best = np.full(n * n, -1, np.int64)
-    idx = np.nonzero(rec != np.arange(n * n))[0]
-    order = idx[np.argsort(A[idx], kind='stable')]
-    best[rec[order]] = order   # ascending area: for repeated receivers the largest donor is written last
-    lines = []
-    for cy, cx in cand:
-        if len(lines) >= max_fjords:
-            break
-        if any((cy - fy) ** 2 + (cx - fx_) ** 2 < (5000 / dx) ** 2 for fy, fx_, _ in lines):
-            continue
-        path = [cy * n + cx]; length = 0.0
-        while length < max_len:
-            nxt = best[path[-1]]
-            if nxt < 0 or A[nxt] < 0.6e6:
-                break
-            length += dist[nxt]; path.append(nxt)
-        if length < min_len:
-            continue
-        P = np.array([((p % n + 0.5) * dx, (p // n + 0.5) * dx) for p in path])
-        P = ndimage.gaussian_filter1d(P, sigma=max(2, int(250 / dx)), axis=0, mode='nearest')
-        out_dir = P[0] - P[min(len(P) - 1, int(1500 / dx))]
-        out_dir /= np.linalg.norm(out_dir) + 1e-9
-        P = np.vstack([P[0] + out_dir * 1200, P])
-        lines.append((cy, cx, P))
-    return [l[2] for l in lines]
-
-
-def spline(pts, values=(), step=50.0):
-    """Centripetal-ish Catmull-Rom through the vertices (metres), resampled every `step` m; per-vertex values are
-    interpolated along it. Returns (points (k, 2), [values (k,) ...])."""
-    P = np.asarray(pts, float)
-    Q = np.vstack([2 * P[0] - P[1], P, 2 * P[-1] - P[-2]])
-    out, vals = [], [[] for _ in values]
-    for i in range(len(P) - 1):
-        p0, p1, p2, p3 = Q[i], Q[i + 1], Q[i + 2], Q[i + 3]
-        k = max(2, int(np.linalg.norm(p2 - p1) / step))
-        for t in np.linspace(0, 1, k, endpoint=False):
-            t2, t3 = t * t, t * t * t
-            out.append(0.5 * (2 * p1 + (p2 - p0) * t + (2 * p0 - 5 * p1 + 4 * p2 - p3) * t2 + (3 * p1 - p0 - 3 * p2 + p3) * t3))
-            for v, vv in zip(values, vals):
-                vv.append(v[i] + (v[i + 1] - v[i]) * t)
-    out.append(P[-1])
-    for v, vv in zip(values, vals):
-        vv.append(v[-1])
-    return np.array(out), [np.array(v, float) for v in vals]
-
-
-def fjord(h, dx, pts_m, floor, width, wall=0.06, power=1.4, rough=None, soft=20.0, reach=3200.0):
-    """A designed fjord: a glacial trough along a spline thalweg with per-vertex floor (m, below sea level in the
-    drowned part, rising at the head into a U-valley) and floor width (m); walls much steeper than the great valley's."""
-    P, (fl, wd) = spline(pts_m, (floor, width), step=dx * 2)
-    out, d, F, W = trough(h, dx, [tuple(p) for p in P], fl, wd, wall=wall, power=power, soft=soft, rough=rough, reach=reach)
-    return out, d, F, W
-
-
-def carve_fjord(h, dx, P, width_scale=1.0):
-    s = np.concatenate([[0], np.cumsum(np.linalg.norm(np.diff(P, axis=0), axis=1))]); u = s / s[-1]
-    floor = np.interp(u, [0, 0.08, 0.2, 0.55, 0.85, 1.0], [-45, -40, -120, -150, -70, 4])     # a sill at the mouth, basins inside
-    width = np.interp(u, [0, 0.5, 0.9, 1.0], [800, 650, 500, 380]) * width_scale
-    out, _, _, _ = trough(h, dx, [tuple(p) for p in P], floor, width, wall=0.03, power=1.45, soft=25.0, reach=3500)
-    return out
 
 
 def beds(h, dx, weight, warp, step=30.0, cliff=0.32):

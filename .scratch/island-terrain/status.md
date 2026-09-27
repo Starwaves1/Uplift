@@ -4,10 +4,11 @@
 - 15: 8192² island (a7c3c2a)
 - 14: view range (a82b960)
 
+**Merged:** 02 glacial fjords and Alpine glacial forms (follow-ups in the ticket).
+
 **Awaiting Garrett's review:** 16 GPU detail (rebasing onto main; port 8770).
 
 **Running:**
-- 02 fjords, also Alpine glacial forms
 - 08 valley head
 - 17 bedrock types
 - 28 climate fields

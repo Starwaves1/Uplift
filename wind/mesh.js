@@ -294,6 +294,9 @@ vec3 ambientLight(vec3 n){
   vec3 ground = (uSunCol*max(uSun.y, 0.0) + uAmb)*vec3(0.16, 0.2, 0.12);
   return mix(ground, uAmb, n.y*0.5 + 0.5);
 }
+// [ticket 20] set before lightMesh() by things that stand on the island (plants): the sky light reaching them there,
+// islandSkyLight() — dimmer in valleys, like the ground beneath. 1 (untouched) for everything else.
+vec3 gSky = vec3(1.0);
 // alb is linear albedo. foliage > 0 wraps light around the terminator and lets it through leaves toward the sun.
 // uSpec is a gloss amount: 0 = matte, ~0.2 = satin paint, ~0.5 = varnish/glass.
 vec3 lightMesh(vec3 alb, vec3 n, vec3 v, float ao, float emit, float foliage){
@@ -302,13 +305,13 @@ vec3 lightMesh(vec3 alb, vec3 n, vec3 v, float ao, float emit, float foliage){
   float diff = clamp((nl + wrap)/(1.0 + wrap), 0.0, 1.0);
   float occ = mix(1.0, ao, 0.6); // baked AO also stands in for local self-shadowing of the sun
   vec3 sun = uSunCol*gShadow;
-  vec3 col = alb*(sun*diff*occ + ambientLight(n)*ao);
+  vec3 col = alb*(sun*diff*occ + ambientLight(n)*ao*gSky);
   col += alb*sun*pow(max(dot(v, uSun), 0.0), 4.0)*1.2*foliage*ao;
   // Schlick Fresnel sky reflection + normalised Blinn-Phong sun highlight (dielectric, F0 = 0.04)
   float nv = max(dot(-v, n), 0.0);
   float g = clamp(uSpec*2.5, 0.0, 1.0);
   float F = 0.04 + 0.96*pow(1.0 - nv, 5.0);
-  col += skyCol(reflect(v, n))*F*mix(0.25, 1.0, g)*ao;
+  col += skyCol(reflect(v, n))*F*mix(0.25, 1.0, g)*ao*gSky;
   vec3 h = normalize(uSun - v);
   float p = mix(12.0, 400.0, g*g);
   float Fh = 0.04 + 0.96*pow(1.0 - max(dot(h, uSun), 0.0), 5.0);

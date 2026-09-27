@@ -92,6 +92,7 @@
     TERRAIN.lod = p.terrainLod; TERRAIN.detail = p.detail;
     POST.opts.fxaa = p.fxaa;
     for (const m of MODELS) if (m.DBG && 'grass' in m.DBG) m.DBG.grass = p.grass;
+    for (const m of MODELS) if (m.setRange) m.setRange(q === 'high'); // plants' far reach (ticket 14): High only for now
   };
   applyQuality();
   new ResizeObserver(resize).observe(canvas);

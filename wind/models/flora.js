@@ -813,7 +813,7 @@ void main(){
   }
   function drawGrass(B, gx, gy, gz, gw) {
     gl.uniform1f(U.uMode, 1);
-    gl.uniform4f(U.uLod, GR, GR_FULL, 40, 0);
+    gl.uniform4f(U.uLod, GR, GR_FULL, FF.on ? 40 : 22, 0);
     gl.uniform1f(U.uSway, 0.13); gl.uniform1f(U.uStiff, 0);
     if (U.uG) gl.uniform4f(U.uG, gx, gy, gz, gw);
     for (let s = 0; s < NG; s++) drawSlot(B, s);
@@ -823,7 +823,9 @@ void main(){
   // The near tiles draw meshes out to the mid LOD's reach (trees 300 m, bushes 120 m) and carry the crash test; beyond,
   // the far forest (below) draws the same plants as impostors
   const TILE = 128, CELL = 8, NC = TILE / CELL, GS = 16, GN = TILE / GS + 1;
-  const CAPS = [1500, 5000, 12000], MARGIN = 20, FAR_MAX = Math.max(TREE.R2, SHRUB.R2) + MARGIN; // MARGIN > camera travel between rebuilds (16 m)
+  // FAR_MAX: the near tiles' reach — the mid LOD's with the far forest on (High), the far meshes' otherwise (Medium, Low)
+  const CAPS = [1500, 5000, 12000], MARGIN = 20, FAR_MESH = 1300; // MARGIN > camera travel between rebuilds (16 m)
+  let FAR_MAX = Math.max(TREE.R2, SHRUB.R2) + MARGIN;
   const tiles = new Map();
   const tkey = (i, j) => (i + 32768) * 65536 + (j + 32768);
   // coarse grids on a 16 m lattice: height, forest mask, copse / altitude-jitter / grove noises; candidates read them
@@ -916,7 +918,7 @@ void main(){
     s *= 1 - 0.32 * ss(460, 620, h);
     let tint = hs(gx, gz, 12);
     if (sp === 'broadleaf' && place === 0 && hs(gx, gz, 13) < 0.016) tint += 2;
-    const far = place === 0 ? 560 + 700 * hs(gx, gz, 15) : FAR_MAX;
+    const far = place === 0 ? 560 + 700 * hs(gx, gz, 15) : FAR_MESH;
     push(k, x, h - 0.45 - (1 - ny) * 6, z, s, hs(gx, gz, 11) * TAU, tint, hs(gx, gz, 14), far);
   }
   // keep plants off buildings, ruins and walls (LANDMARKS loads after this file and may be absent in isolated builds)
@@ -1552,14 +1554,15 @@ void main(){
   // ───── near-camera grass & wildflowers ─────
   // (view range, ticket 14) full density to GR_FULL, thinning and widening out to GR (it was 75 m); each tile's lists are
   // sorted by seed, so a rebuild copies just the prefix its distance can keep
-  const GT = 32, GC = 1.25, GNC = GT / GC, GGS = 4, GGN = GT / GGS + 1, GR = 200, GR_FULL = 60, GRASS_CAP = 40000, GTR = Math.ceil((GR + 12) / GT);
+  const GT = 32, GC = 1.25, GNC = GT / GC, GGS = 4, GGN = GT / GGS + 1, GRASS_CAP = 40000, GTR_MAX = Math.ceil((200 + 12) / GT);
+  let GR = 200, GR_FULL = 60, GTR = GTR_MAX; // (Medium, Low: 75 m, all full density)
   const gtiles = new Map(), ggrid = new Float64Array(GGN * GGN), gfm = new Float64Array(GGN * GGN), gpat = new Float64Array(GGN * GGN);
   const gspc = new Float64Array(GGN * GGN), gtall = new Float64Array(GGN * GGN);
   const gscratch = [];
   for (let k = 0; k < NG; k++) gscratch.push(new Float32Array(GNC * GNC * 8));
   const gcount = new Int32Array(NG);
   const GB = makeBatch(GRASS_CAP, GKINDS);
-  const GNM = (2 * GTR + 1) ** 2;
+  const GNM = (2 * GTR_MAX + 1) ** 2;
   const gneed = { n: 0, key: new Float64Array(GNM), i: new Int32Array(GNM), j: new Int32Array(GNM), d: new Float32Array(GNM), ti: 1e9, tj: 1e9 };
   const glast = { x: 1e9, y: 0, z: 0, f: [0, 0, 0], active: false, dirty: true, count: 0 };
   function sortBySeed(src, n) { // n instances (8 floats each), ascending by seed (float 6)
@@ -1683,6 +1686,16 @@ void main(){
     if (gtiles.size > 900) for (const [k, t] of gtiles) if (Math.abs(t.x0 - cx) > GR + 150 || Math.abs(t.z0 - cz) > GR + 150) gtiles.delete(k);
   }
 
+  // High: the far forest, and grass to 200 m; Medium and Low keep the old reach (far meshes to 1.3 km, grass 75 m)
+  // until they're derived again (view range, ticket 14)
+  function setRange(high) {
+    high = !!high;
+    if (high === FF.on && FAR_MAX === (high ? Math.max(TREE.R2, SHRUB.R2) + MARGIN : FAR_MESH)) return;
+    FF.on = high;
+    FAR_MAX = high ? Math.max(TREE.R2, SHRUB.R2) + MARGIN : FAR_MESH;
+    GR = high ? 200 : 75; GR_FULL = high ? 60 : 75; GTR = Math.ceil((GR + 12) / GT);
+    need.ti = need.tj = 1e9; gneed.ti = gneed.tj = 1e9; tilesDirty = true; glast.dirty = true;
+  }
   // ───── per-frame ─────
   let camAgl = 0, gWash = 0;
   function update(dt, ctx) {
@@ -1815,7 +1828,7 @@ void main(){
   }
 
   return {
-    name: 'flora', replacesTrees: true, update, drawOpaque, hit, preview, KINDS, DBG, _gen: { genTile, genGrassTile, rebuild, genFarTile },
+    name: 'flora', replacesTrees: true, update, drawOpaque, hit, preview, KINDS, DBG, setRange, _gen: { genTile, genGrassTile, rebuild, genFarTile },
     stats: () => ({ tiles: tiles.size, needed: need.n, near: last.lod[0], mid: last.lod[1], far: last.lod[2], grass: glast.active ? glast.count : 0, grassTiles: gtiles.size, ms: last.ms, gen: last.gen, farForest: Object.assign({ free: ffree.length }, fstat) }),
     FF,
     tris: () => KINDS.map(K => `${K.name}: ${K.tris.join('/')}`).concat(GKINDS.map((m, i) => `grass${i}: ${m.count / 3}`)),

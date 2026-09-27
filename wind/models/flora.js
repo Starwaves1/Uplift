@@ -1263,10 +1263,11 @@ void main(){ oA = vec4(pow(clamp(vC, 0.0, 1.0), vec3(2.2)), 1.0); oN = vec4(norm
   function farTileLive(x0, z0, S) {
     const I = typeof ISLAND !== 'undefined' && ISLAND;
     if (!I) return true;
-    const n = I.n, h = I.h, a0 = Math.max(0, Math.floor((x0 - I.origin) * I.inv) - 2), a1 = Math.min(n - 1, Math.ceil((x0 + S - I.origin) * I.inv) + 2);
+    const n = I.n, q = I.q, a0 = Math.max(0, Math.floor((x0 - I.origin) * I.inv) - 2), a1 = Math.min(n - 1, Math.ceil((x0 + S - I.origin) * I.inv) + 2);
     const b0 = Math.max(0, Math.floor((z0 - I.origin) * I.inv) - 2), b1 = Math.min(n - 1, Math.ceil((z0 + S - I.origin) * I.inv) + 2);
     if (a0 > a1 || b0 > b1) return false;
-    for (let b = b0; b <= b1; b++) for (let a = a0, o = b * n; a <= a1; a++) { const v = h[o + a]; if (v > -12 && v < 680) return true; }
+    const lo = (-12 - I.offset) / I.step, hi = (680 - I.offset) / I.step; // in the stored 16-bit steps
+    for (let b = b0; b <= b1; b++) for (let a = a0, o = b * n; a <= a1; a++) { const v = q[o + a]; if (v > lo && v < hi) return true; }
     return false;
   }
   function genFarTile(k, ti, tj) {

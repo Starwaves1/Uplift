@@ -100,10 +100,12 @@ float groundCurv(vec3 wp, float vc){
   float e = texture(uFarN, (wp.xz - uHeightP.x)*uHeightP.y/uHeightP.z).b - 0.5;   // stored ×2, as ±0.5 → ±1
   return mix(vc, e, farT());
 }
-float groundHeight(vec3 wp, float vh){
-  float fp = max(length(fwidth(wp.xz)), 1e-3);
-  float h = textureLod(uHeight, (wp.xz - uHeightP.x)*uHeightP.y/uHeightP.z, max(log2(fp*uHeightP.y), 0.0)).r;
-  return mix(vh, h, farT());
+// (the stored heights by hand-filtered pyramid, hmLod: 4-8 fetches, so only where it matters — the callers pass the
+// pixel footprint fp and the lowest height they care about)
+float groundHeight(vec3 wp, float vh, float fp, float above){
+  float t = farT();
+  if (t <= 0.0 || vh < above) return vh;
+  return mix(vh, hmLod(wp.xz, max(log2(fp*uHeightP.y), 0.0)), t);
 }
 // Meadow flowers seen from afar: the near grass (flora) puts wildflowers in patches (vn at 0.045/m) whose species follow
 // broader zones (vn at 0.018/m: daisy, buttercup, poppy, cornflower); past the instanced flowers' reach (~200 m) the
@@ -279,7 +281,7 @@ void main(){
   // ── view range (ticket 14): a minimal, marked switch for the materials session to adopt — the snow's height,
   // enclosure and normal per pixel (groundHeight/groundCurv/groundNormal), so far off the snow line follows the ground
   // instead of the tile cache's coarse cells (square snow patches on distant peaks) ──
-  float hS = groundHeight(wp, vH), cS = groundCurv(wp, vCurv);
+  float hS = groundHeight(wp, vH, fp, 450.0), cS = groundCurv(wp, vCurv); // (no snow lies below ~590 m)
   float gullyS = smoothstep(0.1, 0.32, cS), crestS = smoothstep(0.12, 0.45, -cS);
   float shaded = 1.0 - clamp(dot(n, vec3(0.31, 0.55, -0.78))*1.4, 0.0, 1.0);
   float rag = vn(wp.xz/23.0 + vec2(3.3, 8.8)) - 0.5 + (vn(wp.xz/7.0 + vec2(1.2, 5.4)) - 0.5)*0.5*(1.0 - smoothstep(1.0, 4.0, fp));
@@ -672,23 +674,28 @@ void main(){
   // Parked on its own texture unit ──
   const UNIT_FN = 19;
   if (typeof ISLAND !== 'undefined' && ISLAND) {
-    const n = ISLAND.n, t = gl.createTexture(), fb = gl.createFramebuffer(), vao = gl.createVertexArray();
+    // at most 4096² (15.6 m texels over the island: 85 MB with mips; the stored grid may be finer, 7.8 m at 8192², but
+    // the map only takes over from the 8 m ring, where the mesh's own heights are smoothed to 16 m)
+    const n = Math.min(ISLAND.n, 4096), t = gl.createTexture(), fb = gl.createFramebuffer(), vao = gl.createVertexArray();
     gl.activeTexture(gl.TEXTURE0 + UNIT_FN); gl.bindTexture(gl.TEXTURE_2D, t);
     gl.texStorage2D(gl.TEXTURE_2D, Math.log2(n) + 1, gl.RGBA8, n, n);
     gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
     gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, t, 0);
     const P = program(`void main(){ vec2 p = vec2((gl_VertexID<<1)&2, gl_VertexID&2); gl_Position = vec4(p*2.0 - 1.0, 0.0, 1.0); }`,
-      GLSL_COMMON + `out vec4 o;
-float hs1(vec2 uv){ return textureLod(uHeight, uv, 1.0).r; }
+      GLSL_COMMON + `out vec4 o; uniform float uN;
 void main(){
-  ivec2 i = ivec2(gl_FragCoord.xy);
-  vec3 nn = normalize(vec3(hmF(i - ivec2(1, 0)) - hmF(i + ivec2(1, 0)), 2.0/uHeightP.y, hmF(i - ivec2(0, 1)) - hmF(i + ivec2(0, 1))));
-  vec2 uv = gl_FragCoord.xy/uHeightP.z, du = vec2(2.0/uHeightP.z, 0.0);
-  float c = hs1(uv), e = ((hs1(uv + du) + hs1(uv - du) + hs1(uv + du.yx) + hs1(uv - du.yx))*0.25 - c)*uHeightP.y*0.5;
+  // this texel's centre (m) and spacing; the heights from the stored grid's pyramid at that spacing (metres)
+  float dx = uHeightP.z/uHeightP.y/uN, lod = max(log2(dx*uHeightP.y), 0.0);
+  vec2 q = uHeightP.x + gl_FragCoord.xy*dx;
+  vec2 e1 = vec2(dx, 0.0), e2 = vec2(0.0, dx);
+  vec3 nn = normalize(vec3(hmLod(q - e1, lod) - hmLod(q + e1, lod), 2.0*dx, hmLod(q - e2, lod) - hmLod(q + e2, lod)));
+  // enclosure 31 m out, on heights smoothed about as much (the tile cache's fine-LOD definition)
+  float d = 31.25, ls = max(log2(d*uHeightP.y), 0.0), c = hmLod(q, ls);
+  float e = ((hmLod(q + vec2(d, 0.0), ls) + hmLod(q - vec2(d, 0.0), ls) + hmLod(q + vec2(0.0, d), ls) + hmLod(q - vec2(0.0, d), ls))*0.25 - c)/d;
   o = vec4(nn.xz*0.5 + 0.5, clamp(e*2.0, -1.0, 1.0)*0.5 + 0.5, 1.0);
 }`);
     gl.disable(gl.DEPTH_TEST); gl.disable(gl.BLEND); gl.disable(gl.CULL_FACE);
-    gl.viewport(0, 0, n, n); gl.useProgram(P.p); setEnv(P);
+    gl.viewport(0, 0, n, n); gl.useProgram(P.p); setEnv(P); gl.uniform1f(P.u.uN, n);
     gl.bindVertexArray(vao); gl.drawArrays(gl.TRIANGLES, 0, 3); gl.bindVertexArray(null);
     gl.bindFramebuffer(gl.FRAMEBUFFER, null); gl.deleteFramebuffer(fb);
     gl.generateMipmap(gl.TEXTURE_2D);
@@ -843,21 +850,23 @@ void main(){
     }
   }
   // Each node's height range, from a min/max pyramid of the island's samples (Int16, metres rounded outward, blocks of
-  // 4 samples and up): the frustum test uses it instead of the whole world's range (fewer nodes, most of all in the
+  // 8 samples and up): the frustum test uses it instead of the whole world's range (fewer nodes, most of all in the
   // shadow cascades' tight boxes), and sea floor more than SEA_CUT deep isn't subdivided further — under that much water
   // it's invisible (and so are the cracks against finer neighbours)
-  const SEA_CUT = -40, HMARGIN = 12;
+  const SEA_CUT = -40, HMARGIN = 20;
   const HP = (() => {
     if (typeof ISLAND === 'undefined' || !ISLAND) return null;
-    const n = ISLAND.n, h = ISLAND.h, lv = [];
-    let w = n >> 2, lo = new Int16Array(w * w), hi = new Int16Array(w * w);
+    // 16-bit steps (height = q·step + offset); blocks of 8 samples, read every other sample (a 7.8 m grid's neighbours
+    // differ by a few metres at most: HMARGIN covers them, the bicubic's overshoot and the micro-relief)
+    const n = ISLAND.n, q = ISLAND.q, st = ISLAND.step, of = ISLAND.offset, lv = [], B = 8, l0 = 3;
+    let w = n / B, lo = new Int16Array(w * w), hi = new Int16Array(w * w);
     for (let b = 0; b < w; b++) for (let a = 0; a < w; a++) {
-      let mn = 1e9, mx = -1e9;
-      for (let y = b * 4; y < b * 4 + 4; y++) for (let x = a * 4, o = y * n; x < a * 4 + 4; x++) { const v = h[o + x]; if (v < mn) mn = v; if (v > mx) mx = v; }
-      lo[b * w + a] = Math.floor(mn) - HMARGIN; hi[b * w + a] = Math.ceil(mx) + HMARGIN;
+      let mn = 65535, mx = 0;
+      for (let y = b * B; y < b * B + B; y += 2) for (let x = a * B, o = y * n; x < a * B + B; x += 2) { const v = q[o + x]; if (v < mn) mn = v; if (v > mx) mx = v; }
+      lo[b * w + a] = Math.floor(mn * st + of) - HMARGIN; hi[b * w + a] = Math.ceil(mx * st + of) + HMARGIN;
     }
-    lv[2] = [lo, hi, w];
-    for (let l = 3; w > 1; l++) {
+    lv[l0] = [lo, hi, w];
+    for (let l = l0 + 1; w > 1; l++) {
       const w2 = w >> 1, lo2 = new Int16Array(w2 * w2), hi2 = new Int16Array(w2 * w2);
       for (let b = 0; b < w2; b++) for (let a = 0; a < w2; a++) {
         const i = b * 2 * w + a * 2;
@@ -865,7 +874,7 @@ void main(){
       }
       lo = lo2; hi = hi2; w = w2; lv[l] = [lo, hi, w];
     }
-    return { lv, n, inv: ISLAND.inv, origin: ISLAND.origin };
+    return { lv, n, inv: ISLAND.inv, origin: ISLAND.origin, l0 };
   })();
   const hr = [MINH, MAXH];
   function nodeRange(x, z, s) { // → hr = [min, max] of the ground under the node (with margins)
@@ -874,7 +883,7 @@ void main(){
     const b0 = Math.max(0, Math.floor((z - HP.origin) * HP.inv) - 1), b1 = Math.min(n - 1, Math.ceil((z + s - HP.origin) * HP.inv) + 1);
     // outside the data the ground is its edge's (terrainH clamps): the clamped indices already say so
     const A0 = Math.min(a0, n - 1), A1 = Math.max(a1, 0), B0 = Math.min(b0, n - 1), B1 = Math.max(b1, 0);
-    let l = 2;
+    let l = HP.l0;
     while (l < HP.lv.length - 1 && ((A1 >> l) - (A0 >> l) > 1 || (B1 >> l) - (B0 >> l) > 1)) l++;
     const [lo, hi, w] = HP.lv[l];
     let mn = 1e9, mx = -1e9;

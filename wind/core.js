@@ -629,6 +629,10 @@ const GLX = (() => {
   };
   // texture units reserved for the atmosphere LUTs (bound once per frame by ATMOS)
   const UNIT_SKY = 15, UNIT_AP = 14;
+  // Texture units are bound once and shared by every program, so each one has a single owner (two textures on one
+  // unit fail silently — the last to bind wins): 0–1 scratch, 2–3 terrain materials, 4 heights, 5–6 terrain tile
+  // cache, 7–10 water, 11 gust map, 12 cloud map, 13 shadow cascades, 14–15 atmosphere, 16–17 island maps, 18 lake
+  // mask, 19 terrain far-field normals, 20–21 tree impostors, 22 baked sky light. Take the next free one.
   // the island heightfield: the 16-bit steps in an R16UI texture, bound once on its own unit, with a mip pyramid of 2×2
   // means made here (8192²: 128 MB + 43 MB; an R32F copy with mips would be 358 MB). A GPU that can't take the full size
   // gets the pyramid from the first level that fits (the ground then renders coarser than it collides).
@@ -779,7 +783,7 @@ if (GLX) {
 // switches it off (everything → 1, the lighting as it was before the bake); test builds also take ?nosky and toggle it
 // with the B key, for before/after looks. Without the file there's a 1×1 stand-in and everything is 1.
 const ISLAND_SKY = (() => {
-  // unit 22: 2–21 are all taken (terrain's far-field normals hold 19); WebGL2 guarantees 32 combined units
+  // unit 22: see the unit list by GLX's UNIT_SKY (WebGL2 guarantees 32 combined units)
   const S = { unit: 22, p: new Float32Array(4), ready: false, on: true, n: 0 };
   if (!GLX) return S;
   const gl = GLX.gl, L = typeof window !== 'undefined' && window.ISLAND_LIGHT;
@@ -811,7 +815,8 @@ const ISLAND_SKY = (() => {
   GLX.setEnv = pr => {
     base(pr);
     const u = pr.u;
-    if (u.uIslSky) { S.p[2] = S.ready && S.on ? 1 : 0; gl.uniform1i(u.uIslSky, S.unit); if (u.uIslSkyP) gl.uniform4fv(u.uIslSkyP, S.p); }
+    // (off in the shadow casters' pass: they don't light anything)
+    if (u.uIslSky) { S.p[2] = S.ready && S.on && !GLX.env.shadowPass ? 1 : 0; gl.uniform1i(u.uIslSky, S.unit); if (u.uIslSkyP) gl.uniform4fv(u.uIslSkyP, S.p); }
   };
   return S;
 })();

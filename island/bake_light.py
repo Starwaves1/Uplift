@@ -21,9 +21,9 @@ patch on open land: its sky light is the sky irradiance × (1 + n.y)/2. So each 
 *relative to that open-ground case* — 1 on flat land, open slopes and crests; lower in valleys, gullies, hollows, at
 cliff feet.
 
-Output: WORK/light_<tag>_<N>_b<R>.npy (float32, 2×R²: uniform, band), <outdir>/island_light.bin (see encode()),
-previews in island/preview/. The bake runs on the heights box-filtered to the stored map's own grid (2048², 31 m by
-default; see main()), so the map holds only relief it can resolve. For the r5 island: 2.4 MB, ~10 s on an RX 7900 XT
+Output: WORK/light_<tag>_<N>_b<B>.npy (float32, 2×B²: uniform, band), <outdir>/island_light.bin (see encode()),
+previews in island/preview/. The bake runs on the heights box-filtered to a 2048² grid (31 m, --bake-res; see main()),
+the stored map's own, so the map holds only relief it can resolve. For the r5 island: 2.4 MB, ~10 s on an RX 7900 XT
 (64 directions × 60 steps out to 15 km).
 
 usage: python bake_light.py tag N outdir [--res R] [--bake-res B] [--dirs D] [--reach M] [--tau T] [--preview] [--encode-only]
@@ -246,29 +246,35 @@ def previews(h, Au, Ab, dx, tag, pre):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('tag'); ap.add_argument('N', type=int); ap.add_argument('outdir')
-    ap.add_argument('--res', type=int, default=2048, help='stored map size (a divisor of N)')
-    ap.add_argument('--bake-res', type=int, default=0, help='bake on the heights box-filtered to this size (default: --res)')
+    ap.add_argument('--res', type=int, default=2048, help='stored map size (a divisor of the bake res)')
+    ap.add_argument('--bake-res', type=int, default=2048, help='bake on the heights box-filtered to this size (a divisor of N)')
     ap.add_argument('--dirs', type=int, default=64)
     ap.add_argument('--reach', type=float, default=16000.0)
     ap.add_argument('--tau', type=float, default=0.1, help="the sky model's optical depth (sets the horizon band's shape)")
     ap.add_argument('--preview', action='store_true')
     ap.add_argument('--encode-only', action='store_true', help='re-encode WORK/light_<tag>_<N>_b<bake res>.npy')
     a = ap.parse_args()
-    h_np = np.load(f'{WORK}/h_{a.tag}_{a.N}.npy').astype(np.float32)
+    h_np = np.load(f'{WORK}/h_{a.tag}_{a.N}.npy', mmap_mode='r')
     # Bake on the heights box-filtered to the stored map's own grid (31 m at 2048²): relief finer than a texel (rills,
     # the knobs along a crest) can't be told apart in the map, and baking it at 7.8 m then averaging mixes a crest's
     # open sky with the gully beside it — narrow crests came out as dark as the gullies, and the rills' fine horizon
     # changes (the horizon band reacts to a degree or two) left combed, smudgy streaks down the slopes. Occlusion finer
-    # than a texel is the shader's own job (the terrain's per-pixel hollow term).
-    nb = min(a.bake_res or a.res, h_np.shape[0])
-    if nb < h_np.shape[0]:
-        f = h_np.shape[0] // nb
-        h_np = h_np.reshape(nb, f, nb, f).mean((1, 3), dtype=np.float64).astype(np.float32)
-    n = h_np.shape[0]; dx = SIZE / n
+    # than a texel isn't represented at all (the terrain shader's own hollow term, cav, is material and noise relief).
+    nb = min(a.bake_res, h_np.shape[0])
+    assert h_np.shape[0] % nb == 0, f'--bake-res {nb} must divide {h_np.shape[0]}'
+    f = h_np.shape[0] // nb
+    n = nb; dx = SIZE / n
     res = min(a.res, n)
+    if a.res > n:
+        print(f'note: --res {a.res} is finer than the bake ({n}²): storing {n}²')
+    assert n % res == 0, f'--res {res} must divide the bake res {n}'
     if a.encode_only:
         Au, Ab = np.load(f'{WORK}/light_{a.tag}_{a.N}_b{n}.npy')
+        h_np = None
     else:
+        h_np = np.asarray(h_np, np.float32)
+        if f > 1:
+            h_np = h_np.reshape(n, f, n, f).mean((1, 3), dtype=np.float64).astype(np.float32)
         t0 = time.time()
         Au, Ab, V = bake(torch.from_numpy(h_np).to(dev), dx, a.dirs, a.reach, tau=a.tau)
         torch.cuda.empty_cache()
@@ -285,6 +291,8 @@ def main():
     back = decode(blob)
     assert all(np.array_equal(b, q) for b, q in zip(back, qs)), 'round trip failed'
     if a.preview:
+        if h_np is None:
+            h_np = np.asarray(np.load(f'{WORK}/h_{a.tag}_{a.N}.npy', mmap_mode='r'), np.float32).reshape(n, f, n, f).mean((1, 3))
         previews(h_np, Au, Ab, dx, a.tag, os.path.join(os.path.dirname(os.path.abspath(__file__)), 'preview'))
 
 

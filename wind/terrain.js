@@ -167,10 +167,12 @@ void matTri(int L, vec3 p, vec3 n0, float k, out vec3 a, out vec3 n, out float h
 // shrub cover seen from above: round bushes on a jittered lattice of spacing s (m), each present with probability dens and
 // its own size; where a bush gets smaller than a pixel (fp m) it fades to the average cover instead of shimmering
 float shrubs(vec2 p, float s, float dens, float fp){
+  float far = smoothstep(0.12, 0.45, fp/s);
+  if (far >= 1.0 || dens <= 0.0) return dens*0.62;          // past a pixel: only the average cover (and no lattice to walk)
   vec2 v = vorF1(p/s);
   float r = 0.32 + 0.24*fract(v.y*13.7), e = max(fp/s, 0.05);
   float m = step(v.y, dens)*smoothstep(r + e, r - e, v.x);
-  return mix(m, dens*0.62, smoothstep(0.12, 0.45, fp/s));
+  return mix(m, dens*0.62, far);
 }
 float gliderShadow(vec3 wp){
   if (uSun.y < 0.05) return 0.0;

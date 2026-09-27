@@ -122,6 +122,48 @@ vec3 rockRelief(vec2 p, float fr, int oct, inout float tone){
   }
   return acc;
 }
+// ── photoscanned ground (High): layers of two texture arrays, in the order of MAT_IDS in the JS below — sRGB albedo, and
+// the tangent normal (xy, OpenGL: +x east, +y image-up) with the scan's height (z) ──
+uniform mediump sampler2DArray uMatC, uMatN; uniform float uMat;
+// metres of ground per tile (aerial scans 15–90 m, close-ups 1.3–3 m) and each layer's mean luminance
+const float TILE[18] = float[18](50.0, 80.0, 90.0, 15.0, 20.0, 15.0, 30.0, 80.0, 2.7, 1.5, 2.0, 2.0, 2.5, 2.0, 3.0, 1.3, 2.0, 2.0);
+const float MLUM[18] = float[18](0.17, 0.15, 0.12, 0.14, 0.24, 0.11, 0.42, 0.55, 0.24, 0.24, 0.36, 0.2, 0.24, 0.14, 0.12, 0.19, 0.14, 0.82);
+const int L_GRANITE = 0, L_BROKEN = 1, L_ALPINE = 2, L_FELL = 3, L_DRY = 4, L_SHORE = 5, L_BEACH = 6, L_SNOWFIELD = 7,
+  L_FACE = 8, L_PALE = 9, L_KARST = 10, L_SCREE = 11, L_GRAVEL = 12, L_GRASS = 13, L_LEAVES = 14, L_SOIL = 15, L_REDSOIL = 16,
+  L_SNOW = 17;
+const mat2 MROT = mat2(0.8, 0.6, -0.6, 0.8);
+float lumi(vec3 c){ return dot(c, vec3(0.2126, 0.7152, 0.0722)); }
+// the scan's slope along its own axes from the tangent normal: (dh/du, dh/dv) with v running down the image
+vec2 tslope(vec2 rg){ vec2 t = rg*2.0 - 1.0; return vec2(-t.x, t.y)/sqrt(max(1.0 - dot(t, t), 0.09)); }
+float matFar; // per pixel, 0 near … ~0.65 far: how much the scans' own contrast has faded toward their average colour
+// a layer seen from above at p (m), tiles k× their true size: linear albedo, world slope (dh/dx, dh/dz), height 0…1.
+// Two lookups — the tile, and a copy rotated ~37° and 1.37× larger — swapped every half tile or so by a noise and by
+// their own heights, so even a 15 m scan doesn't repeat as a grid; far off, the scan's contrast fades toward its average
+// (its last mip), and the broad variation laid on top carries the land instead
+void matTop(int L, vec2 p, float k, out vec3 a, out vec2 g, out float h){
+  float t = TILE[L]*k, l = float(L);
+  vec3 u1 = vec3(p/t, l), u2 = vec3(MROT*(p/(t*1.37)) + vec2(0.31, 0.77), l);
+  vec3 n1 = texture(uMatN, u1).rgb, n2 = texture(uMatN, u2).rgb;
+  float b = smoothstep(0.25, 0.75, vn(p/(t*0.61) + vec2(l*7.1, 3.3))*0.7 + vn(p/(t*2.3) + vec2(1.7, l))*0.3 + (n2.b - n1.b)*0.6);
+  a = mix(texture(uMatC, u1).rgb, texture(uMatC, u2).rgb, b);
+  if (matFar > 0.0) a = mix(a, textureLod(uMatC, u1, 10.0).rgb, matFar);
+  h = mix(n1.b, n2.b, b);
+  g = mix(tslope(n1.rg), transpose(MROT)*tslope(n2.rg), b)*(1.0 - matFar);
+}
+// a layer on steep ground: projected along the three world axes (the faces upright: image-up is world-up) and blended
+// by the normal, so nothing stretches down a wall. Returns the albedo, the normal with the layer's relief, the height
+void matTri(int L, vec3 p, vec3 n0, float k, out vec3 a, out vec3 n, out float h){
+  vec3 bw = pow(abs(n0), vec3(4.0)); bw /= bw.x + bw.y + bw.z;
+  float t = TILE[L]*k, l = float(L);
+  vec3 d = vec3(0.0); a = vec3(0.0); h = 0.0;
+  if (bw.x > 0.02) { vec3 u = vec3(vec2(p.z, -p.y)/t, l), q = texture(uMatN, u).rgb; vec2 s = tslope(q.rg);
+    a += texture(uMatC, u).rgb*bw.x; h += q.b*bw.x; d += vec3(0.0, -s.y, s.x)*bw.x; }
+  if (bw.z > 0.02) { vec3 u = vec3(vec2(p.x, -p.y)/t + 0.37, l), q = texture(uMatN, u).rgb; vec2 s = tslope(q.rg);
+    a += texture(uMatC, u).rgb*bw.z; h += q.b*bw.z; d += vec3(s.x, -s.y, 0.0)*bw.z; }
+  if (bw.y > 0.02) { vec3 u = vec3(p.xz/t + 0.71, l), q = texture(uMatN, u).rgb; vec2 s = tslope(q.rg);
+    a += texture(uMatC, u).rgb*bw.y; h += q.b*bw.y; d += vec3(s.x, 0.0, s.y)*bw.y; }
+  n = normalize(n0 - d);
+}
 float gliderShadow(vec3 wp){
   if (uSun.y < 0.05) return 0.0;
   float t = (uG.y - wp.y)/uSun.y;
@@ -181,9 +223,105 @@ void main(){
   col = mix(col, vec3(0.95,0.96,0.98), sn);
   if (vH < 0.0) col = mix(vec3(0.62,0.6,0.48), vec3(0.3,0.33,0.28), smoothstep(0.0, 14.0, -vH)); // sand to silt: the water's absorption tints it
   float grass = (1.0-rk)*(1.0-sn)*(1.0-scree)*(1.0-vForest*0.8)*smoothstep(2.0, 6.0, vH);
-  // per-pixel relief (heightfield slopes added to the vertex normal): hummocks, clods, pebbles; rock is much rougher
   float cav = 0.0;
-  if (uDetail > 0.0) {
+  // ── photoscanned ground (High, once the layers have loaded): the same landform classes plus the island's own maps
+  // (cliffs, scree, rivers), each drawn with the scans of its region and height-blended — stones and rock poke through
+  // the turf instead of cross-fading into it. Close-up scans add the fine detail over the last ~150 m ──
+  bool mats = uMat > 0.5 && uDetail > 1.5 && vH > -0.5;
+  vec3 albL = vec3(0.0);
+  if (mats) {
+    vec4 im = islandMaps(wp.xz), rg = islandRegions(wp.xz);   // flow, sediment, scree, cliff; Nordic, Med, plateau, volcano
+    float nord = rg.x, med = rg.y, plat = rg.z, volc = rg.w, alp = clamp(1.0 - nord - med - plat - volc, 0.0, 1.0);
+    matFar = smoothstep(400.0, 2500.0, dist)*0.65;
+    float wSnow = sn;
+    // bare rock: the landform's, the island's cliffs, and the thin-soiled Nordic granite on moderate slopes and knolls
+    float wRock = max(max(rk, smoothstep(0.35, 0.8, im.a)), nord*smoothstep(0.36, 0.56, slope + ridgeC*0.25))*(1.0 - wSnow);
+    float wScree = max(scree, smoothstep(0.3, 0.7, im.b)*smoothstep(0.08, 0.22, slope))*(1.0 - wRock)*(1.0 - wSnow);
+    float wShore = (1.0 - smoothstep(0.9, 2.8, vH + vVar*0.8))*(1.0 - wRock);
+    float wGravel = smoothstep(0.62, 0.82, im.r)*(1.0 - smoothstep(0.05, 0.16, slope))*(1.0 - wShore)*(1.0 - wSnow);
+    float rest = (1.0 - wSnow)*(1.0 - wRock)*(1.0 - wScree)*(1.0 - wShore)*(1.0 - wGravel);
+    float wForest = vForest*0.9*rest, wMeadow = rest - wForest;
+    float wall = smoothstep(0.38, 0.62, slope)*wRock;                 // the share drawn as upright rock faces
+    vec3 a, sumA = vec3(0.0); vec2 g, sumG = vec2(0.0); float h, e, sumW = 1e-5, sumH = 0.0;
+    // each layer adds in by its class weight, favoured where its own surface stands high
+    #define ADDL(w) e = (w)*exp2(5.0*h - 2.5); sumA += a*e; sumG += g*e; sumH += h*e; sumW += e;
+    if (wMeadow > 0.01) {
+      vec2 p = wp.xz;
+      // patches at three scales: what breaks up a hillside seen from the air
+      float pch = vn(p/9.0 + vec2(3.1, 0.4))*0.4 + vn(p/33.0 + vec2(7.7, 2.6))*0.35 + vn(p/140.0 + vec2(1.9, 5.3))*0.25;
+      float wf = nord, wa = alp + med*moist*0.35, wd = med*(1.0 - moist*0.35) + plat, wv = volc;
+      float s = wf + wa + wd + wv + 1e-4; wf /= s; wa /= s; wd /= s; wv /= s;
+      if (wf > 0.02) {           // Nordic fell: heath and moss, broken by ice-scoured granite slabs on every knoll
+        float slab = smoothstep(0.55, 0.78, pch + ridgeC*0.35 + slope*0.5 - hollow*0.35);
+        if (slab < 0.98) {       // heath: the scan's yellow moss turned toward olive and brown, bog-green in the hollows
+          matTop(L_FELL, p, 1.0, a, g, h);
+          a = mix(a, lumi(a)*mix(vec3(0.95, 0.95, 0.68), vec3(0.78, 1.05, 0.62), hollow), 0.6);
+          ADDL(wMeadow*wf*(1.0 - slab))
+        }
+        if (slab > 0.02) { matTop(L_GRANITE, p, 1.0, a, g, h); ADDL(wMeadow*wf*slab) }
+      }
+      if (wa > 0.02) {           // alpine grass, stonier on knolls and higher up
+        float stony = smoothstep(0.55, 0.8, pch + ridgeC*0.3 + slope*0.9 + smoothstep(900.0, 1700.0, alt)*0.4);
+        if (stony < 0.98) { matTop(L_ALPINE, p, 1.0, a, g, h); ADDL(wMeadow*wa*(1.0 - stony)) }
+        if (stony > 0.02) { matTop(L_BROKEN, p, 1.0, a, g, h); ADDL(wMeadow*wa*stony) }
+      }
+      if (wd > 0.02) {           // Mediterranean garrigue: pale stony ground mottled with dark scrub; karst pavement on the plateau
+        float scrub = smoothstep(0.42, 0.62, pch + moist*0.3 + shaded*0.18 - 0.14 - plat*0.15);    // thicker on shaded slopes
+        if (plat > 0.5) { matTop(L_KARST, p, 6.0, a, g, h); a = lumi(a)*vec3(1.04, 1.0, 0.9)*1.15; }
+        else { matTop(L_DRY, p, 1.0, a, g, h); a = mix(a, lumi(a)*vec3(1.1, 1.0, 0.8), 0.55); }      // pale buff limestone ground
+        ADDL(wMeadow*wd*(1.0 - scrub))
+        if (scrub > 0.02) { matTop(L_FELL, p, 0.5, a, g, h); a = vec3(0.05, 0.068, 0.032)*(lumi(a)/MLUM[L_FELL]); h = h*0.5 + 0.5; ADDL(wMeadow*wd*scrub) }
+      }
+      if (wv > 0.02) {           // the volcano: grass low on its skirts, dark scoria and ash above
+        float ash = smoothstep(650.0, 1250.0, alt + (pch - 0.5)*300.0);
+        if (ash < 0.98) { matTop(L_ALPINE, p, 1.0, a, g, h); ADDL(wMeadow*wv*(1.0 - ash)) }
+        if (ash > 0.02) { matTop(L_BROKEN, p, 1.0, a, g, h); a = lumi(a)*vec3(0.55, 0.5, 0.47); ADDL(wMeadow*wv*ash) }
+      }
+    }
+    if (wForest > 0.01) {        // the floor under the trees: dark and green from the air, leaf litter up close
+      matTop(L_LEAVES, wp.xz, 4.0, a, g, h); a = vec3(0.04, 0.075, 0.032)*(lumi(a)/MLUM[L_LEAVES]); ADDL(wForest)
+    }
+    if (wScree > 0.01) { matTop(L_SCREE, wp.xz, 5.0, a, g, h); ADDL(wScree) }
+    if (wShore > 0.01) {         // pale warm sand in the south, shingle and rock on the Nordic shore
+      if (nord < 0.6) { matTop(L_BEACH, wp.xz, 1.0, a, g, h); a = mix(a, lumi(a)*vec3(1.12, 1.03, 0.86), med + plat); ADDL(wShore*(1.0 - nord)) }
+      if (nord > 0.02) { matTop(L_SHORE, wp.xz, 1.0, a, g, h); ADDL(wShore*nord) }
+    }
+    if (wGravel > 0.01) { matTop(L_GRAVEL, wp.xz, 4.0, a, g, h); a = mix(a, lumi(a)*vec3(0.95, 0.98, 1.02)*1.1, 0.6); ADDL(wGravel) }
+    if (wSnow > 0.01) { matTop(L_SNOWFIELD, wp.xz, 1.0, a, g, h); a = mix(a, vec3(0.82), 0.45*smoothstep(0.6, 1.0, wSnow)); ADDL(wSnow) }
+    // rock: granite slabs (the volcano's broken basalt) where it lies back, upright faces where it's steep; recoloured
+    // by region — grey granite, pale streaked limestone in the south and on the plateau, dark basalt on the volcano
+    vec3 triN = n;
+    if (wRock > 0.01) {
+      vec3 ra = vec3(0.0); vec2 rgr = vec2(0.0); float rh = 0.0;
+      if (wall < 0.99) { matTop(volc > 0.5 ? L_BROKEN : L_GRANITE, wp.xz, 1.0, a, g, h); ra = a*(1.0 - wall); rgr = g*(1.0 - wall); rh = h*(1.0 - wall); }
+      if (wall > 0.01) { matTri(med + plat > 0.5 ? L_PALE : L_FACE, wp, n, 6.0, a, triN, h); ra += a*wall; rh += h*wall; }
+      float lg = lumi(ra);
+      a = mix(ra, lg*vec3(0.95, 0.98, 1.02), 0.6)*(nord + alp) + lg*vec3(1.1, 1.03, 0.9)*1.35*(med + plat) + lg*vec3(0.6, 0.58, 0.57)*volc;
+      g = rgr; h = rh;                                                  // the faces' relief is in triN
+      ADDL(wRock)
+    }
+    albL = sumA/sumW; vec2 gs = sumG/sumW; float hb = sumH/sumW;
+    // close-ups of the dominant ground over the last ~150 m: its fine light and shade and its relief
+    float near = 1.0 - smoothstep(40.0, 160.0, dist);
+    if (near > 0.01) {
+      int Lc = wRock > 0.5 ? (med + plat > 0.5 ? L_PALE : L_FACE) : wSnow > 0.5 ? L_SNOW : wScree > 0.5 ? L_SCREE :
+        (wShore > 0.5 || wGravel > 0.5) ? L_GRAVEL : wForest > 0.5 ? L_LEAVES : (med + plat > 0.5 ? (moist > 0.5 ? L_REDSOIL : L_SOIL) : L_GRASS);
+      if (wRock > 0.5) { vec3 cn; matTri(Lc, wp, triN, 1.0, a, cn, h); triN = normalize(mix(triN, cn, near*0.8)); }
+      else { matTop(Lc, wp.xz, 1.0, a, g, h); gs += g*near*0.6; }
+      albL *= mix(1.0, lumi(a)/MLUM[Lc], near*0.7);
+    }
+    // broad variation, 50 m to a kilometre: lighter and darker ground, and sun-dried patches
+    float mv = vn(wp.xz/47.0 + vec2(2.2, 7.1))*0.3 + vn(wp.xz/180.0 + vec2(5.1, 0.6))*0.45 + vn(wp.xz/650.0 + vec2(8.3, 3.9))*0.25;
+    albL *= 0.78 + 0.44*mv;
+    albL = mix(albL, albL*vec3(1.08, 1.0, 0.84), smoothstep(0.45, 0.8, vn(wp.xz/320.0 + vec2(4.4, 1.2)))*0.6*(1.0 - wSnow)*(1.0 - wRock));
+    vec3 nTop = normalize(vec3(n.x/max(n.y, 0.2) - gs.x, 1.0, n.z/max(n.y, 0.2) - gs.y));
+    n = normalize(mix(nTop, triN, clamp(wall*1.2, 0.0, 1.0)));
+    cav = (hb - 0.5)*0.8;
+    grass = wMeadow*smoothstep(2.0, 6.0, vH);
+    #undef ADDL
+  }
+  // per-pixel relief (heightfield slopes added to the vertex normal): hummocks, clods, pebbles; rock is much rougher
+  if (uDetail > 0.0 && !mats) {
     float rough = mix(mix(1.0, 2.2, scree), 3.2, rk)*mix(1.0, 0.45, sn)*mix(1.0, 0.6, vForest);
     vec2 gsum = vec2(0.0);
     vec3 d1 = vnd(wp.xz/90.0 + vec2(3.7, 1.1));
@@ -245,6 +383,7 @@ void main(){
     col *= 1.0 + clump*(0.3*grass + 0.6*scree*(1.0 - sn)); // grass clumps; stones in the scree
     col *= 1.0 + cav*mix(0.18, 0.5, rk);
   }
+  if (mats) col = albL;                    // linear already; the multiplicative touches below work the same on it
   // wind over the meadows: gust patches (cat's-paws) travelling downwind. Grass leaning in a gust shows its paler,
   // glossier flanks (most with the wind at your back) and lulls sit a shade darker; close up, quick streaky ripples run
   // through the gusts. The same field, with the same inertia, sways the plants (gustMap() in core.js).
@@ -262,7 +401,7 @@ void main(){
     col *= 1.0 + sheen*vec3(0.46, 0.42, 0.2)*(1.0 + 0.35*away)*(0.6 + 0.4*graze);
   }
   // fine mottling of the turf (smooth, and gone before it's smaller than a pixel or stretched down a slope)
-  col *= 1.0 + (vn(wp.xz*1.3 + vec2(2.9, 6.3)) - 0.5)*0.16*grass*(1.0 - smoothstep(0.25, 0.8, fp))*(1.0 - smoothstep(0.12, 0.3, slope));
+  if (!mats) col *= 1.0 + (vn(wp.xz*1.3 + vec2(2.9, 6.3)) - 0.5)*0.16*grass*(1.0 - smoothstep(0.25, 0.8, fp))*(1.0 - smoothstep(0.12, 0.3, slope));
   // grass pressed by the glider's passage
   if (uGAgl < 30.0) {
     vec2 d = wp.xz - uG.xz;
@@ -274,7 +413,7 @@ void main(){
     col *= 1.0 + w*grass*(trail*(0.2 + 0.12*sin(along*0.7 - uTime*9.0)) + ring*0.22);
   }
   // scene-linear lighting: sun (grass blades scatter a little light past the terminator), sky dome, sunlit-ground bounce
-  col = toLin(col);
+  if (!mats) col = toLin(col);
   float gw = grass*0.15;
   float diff = clamp((dot(n, uSun) + gw)/(1.0 + gw), 0.0, 1.0);
   float casc;
@@ -289,6 +428,42 @@ void main(){
 }`;
   const TP = program(TVS, TFS);
   const TPS = program(TVS, GLSL_COMMON + `out vec4 o; void main(){ o = vec4(0.0); }`); // depth only (shadow maps)
+
+  // ── photoscanned ground (assets/materials, built by assets/materials.py): two texture arrays fetched after start —
+  // until they're in, the procedural shading stands in. Only on the island (the blend needs its maps) ──
+  const MAT_IDS = ['aerial_rocks_02', 'aerial_rocks_04', 'rocky_terrain_02', 'aerial_grass_rock', 'aerial_ground_rock',
+    'coast_sand_rocks_02', 'aerial_beach_01', 'snow_field_aerial', 'rock_face_03', 'rock_06', 'sandstone_cracks',
+    'rocks_ground_02', 'gravelly_sand', 'leafy_grass', 'forest_leaves_02', 'brown_mud_dry', 'red_laterite_soil_stones',
+    'snow_02']; // the order of the L_* layer constants in TFS
+  const UNIT_MC = 2, UNIT_MN = 3, mat = { c: null, n: null, ready: false, on: true };
+  (async () => {
+    if (typeof window === 'undefined' || !window.ISLAND_DATA) return;
+    try {
+      const meta = await (await fetch('assets/materials/materials.json')).json();
+      if (meta.layers.map(l => l.id).join() !== MAT_IDS.join()) throw new Error('the layer list changed');
+      const S = meta.size, levels = Math.log2(S) + 1;
+      const load = f => fetch('assets/materials/' + f).then(r => { if (!r.ok) throw new Error(f + ': ' + r.status); return r.blob(); })
+        .then(b => createImageBitmap(b, { premultiplyAlpha: 'none', colorSpaceConversion: 'none' }));
+      const imgs = await Promise.all(MAT_IDS.flatMap(id => [load(id + '_c.webp'), load(id + '_n.webp')]));
+      const aniso = gl.getExtension('EXT_texture_filter_anisotropic');
+      const make = (fmt, k) => {
+        const t = gl.createTexture(), T = gl.TEXTURE_2D_ARRAY;
+        gl.bindTexture(T, t);
+        gl.texStorage3D(T, levels, fmt, S, S, MAT_IDS.length);
+        for (let i = 0; i < MAT_IDS.length; i++) gl.texSubImage3D(T, 0, 0, 0, i, S, S, 1, gl.RGBA, gl.UNSIGNED_BYTE, imgs[i * 2 + k]);
+        gl.generateMipmap(T);
+        for (const [p, v] of [[gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR], [gl.TEXTURE_MAG_FILTER, gl.LINEAR], [gl.TEXTURE_WRAP_S, gl.REPEAT], [gl.TEXTURE_WRAP_T, gl.REPEAT]]) gl.texParameteri(T, p, v);
+        if (aniso) gl.texParameterf(T, aniso.TEXTURE_MAX_ANISOTROPY_EXT, Math.min(8, gl.getParameter(aniso.MAX_TEXTURE_MAX_ANISOTROPY_EXT)));
+        return t;
+      };
+      gl.activeTexture(gl.TEXTURE0 + UNIT_MC); mat.c = make(gl.SRGB8_ALPHA8, 0);
+      gl.activeTexture(gl.TEXTURE0 + UNIT_MN); mat.n = make(gl.RGBA8, 1);
+      gl.activeTexture(gl.TEXTURE0);
+      imgs.forEach(b => b.close());
+      mat.ready = true;
+      console.log('ground materials:', MAT_IDS.length, 'layers');
+    } catch (e) { console.warn('ground materials unavailable, the procedural shading stays:', e); }
+  })();
 
   // ── tile cache: each CDLOD node's 33×33 heights (plus a 1-texel border for normals) evaluated once into an atlas ──
   const SLOT = 35, ATLAS = 2048, PER = Math.floor(ATLAS / SLOT), NSLOT = PER * PER, UNIT_HC = 6;
@@ -637,6 +812,11 @@ void main(){
     gl.enable(gl.CULL_FACE);
     gl.useProgram(TP.p); setEnv(TP);
     gl.uniform1f(TP.u.uDetail, detail);
+    if (mat.ready) {
+      gl.activeTexture(gl.TEXTURE0 + UNIT_MC); gl.bindTexture(gl.TEXTURE_2D_ARRAY, mat.c);
+      gl.activeTexture(gl.TEXTURE0 + UNIT_MN); gl.bindTexture(gl.TEXTURE_2D_ARRAY, mat.n); gl.activeTexture(gl.TEXTURE0);
+    }
+    gl.uniform1i(TP.u.uMatC, UNIT_MC); gl.uniform1i(TP.u.uMatN, UNIT_MN); gl.uniform1f(TP.u.uMat, mat.ready && mat.on ? 1 : 0);
     gl.uniform3fv(TP.u.uG, g.pos); gl.uniform3fv(TP.u.uGR, g.r); gl.uniform3fv(TP.u.uGF, g.f);
     gl.uniform3fv(TP.u.uGV, g.vel); gl.uniform1f(TP.u.uGAgl, g.agl);
     drawNodes(TP, RK / viewLod);
@@ -654,5 +834,6 @@ void main(){
     gl.disable(gl.BLEND);
   }
   return { draw, drawShadow, drawWater, beginFrame, stats, get cacheUsed() { return slotOf.size; }, get lod() { return viewLod; }, set lod(v) { viewLod = v || 1; },
-    get detail() { return detail; }, set detail(v) { detail = v; } };
+    get detail() { return detail; }, set detail(v) { detail = v; },
+    get materials() { return mat.ready && mat.on; }, set materials(v) { mat.on = !!v; } };
 })();

@@ -1,0 +1,203 @@
+{
+ "size": 1024,
+ "layers": [
+  {
+   "id": "aerial_rocks_02",
+   "scale": "aerial",
+   "tile": 50,
+   "role": "granite mountainside",
+   "albedo": [
+    0.2318,
+    0.1636,
+    0.0689
+   ]
+  },
+  {
+   "id": "aerial_rocks_04",
+   "scale": "aerial",
+   "tile": 80,
+   "role": "broken grey rock",
+   "albedo": [
+    0.214,
+    0.1417,
+    0.0483
+   ]
+  },
+  {
+   "id": "rocky_terrain_02",
+   "scale": "aerial",
+   "tile": 90,
+   "role": "rocky alpine grassland",
+   "albedo": [
+    0.134,
+    0.1257,
+    0.0222
+   ]
+  },
+  {
+   "id": "aerial_grass_rock",
+   "scale": "aerial",
+   "tile": 15,
+   "role": "grass and rock: Nordic fell",
+   "albedo": [
+    0.1888,
+    0.1363,
+    0.0315
+   ]
+  },
+  {
+   "id": "aerial_ground_rock",
+   "scale": "aerial",
+   "tile": 20,
+   "role": "stony dry ground: Mediterranean",
+   "albedo": [
+    0.3307,
+    0.2214,
+    0.1616
+   ]
+  },
+  {
+   "id": "coast_sand_rocks_02",
+   "scale": "aerial",
+   "tile": 15,
+   "role": "rocky shore",
+   "albedo": [
+    0.1331,
+    0.1093,
+    0.0532
+   ]
+  },
+  {
+   "id": "aerial_beach_01",
+   "scale": "aerial",
+   "tile": 30,
+   "role": "beach sand",
+   "albedo": [
+    0.4871,
+    0.4082,
+    0.3373
+   ]
+  },
+  {
+   "id": "snow_field_aerial",
+   "scale": "aerial",
+   "tile": 80,
+   "role": "snowfield",
+   "albedo": [
+    0.541,
+    0.5423,
+    0.6648
+   ]
+  },
+  {
+   "id": "rock_face_03",
+   "scale": "close",
+   "tile": 2.7,
+   "role": "cliff face (triplanar)",
+   "albedo": [
+    0.3514,
+    0.2195,
+    0.1259
+   ]
+  },
+  {
+   "id": "rock_06",
+   "scale": "close",
+   "tile": 1.5,
+   "role": "pale layered rock: plateau walls",
+   "albedo": [
+    0.3813,
+    0.2132,
+    0.1045
+   ]
+  },
+  {
+   "id": "sandstone_cracks",
+   "scale": "close",
+   "tile": 2.0,
+   "role": "cracked pale rock: plateau tops",
+   "albedo": [
+    0.5695,
+    0.3201,
+    0.1588
+   ]
+  },
+  {
+   "id": "rocks_ground_02",
+   "scale": "close",
+   "tile": 2.0,
+   "role": "scree",
+   "albedo": [
+    0.2602,
+    0.1972,
+    0.1218
+   ]
+  },
+  {
+   "id": "gravelly_sand",
+   "scale": "close",
+   "tile": 2.5,
+   "role": "gravel: river beds, fans",
+   "albedo": [
+    0.3833,
+    0.2121,
+    0.0997
+   ]
+  },
+  {
+   "id": "leafy_grass",
+   "scale": "close",
+   "tile": 2.0,
+   "role": "meadow grass",
+   "albedo": [
+    0.1844,
+    0.1355,
+    0.061
+   ]
+  },
+  {
+   "id": "forest_leaves_02",
+   "scale": "close",
+   "tile": 3.0,
+   "role": "forest floor",
+   "albedo": [
+    0.1885,
+    0.1143,
+    0.0366
+   ]
+  },
+  {
+   "id": "brown_mud_dry",
+   "scale": "close",
+   "tile": 1.3,
+   "role": "dry soil",
+   "albedo": [
+    0.2891,
+    0.1791,
+    0.0846
+   ]
+  },
+  {
+   "id": "red_laterite_soil_stones",
+   "scale": "close",
+   "tile": 2.0,
+   "role": "red stony soil",
+   "albedo": [
+    0.2836,
+    0.107,
+    0.0599
+   ]
+  },
+  {
+   "id": "snow_02",
+   "scale": "close",
+   "tile": 2.0,
+   "role": "snow",
+   "albedo": [
+    0.8197,
+    0.8182,
+    0.8401
+   ]
+  }
+ ]
+}

@@ -8,6 +8,11 @@
 //   await R.shot(name)                      render one frame and save it
 //   await R.pair(name, xkm, ykm, deg, agl)  the same view with the photo materials on and off (<name>_on / _off)
 const R = window.R = {};
+// never take the user's mouse: the game asks for pointer lock when it starts flying (takeFlight) — refuse it outright,
+// so it falls back to steering by the (synthetic, in-page) mouse position; release any lock this page already holds.
+// Nothing here moves the real cursor: R.centre() only dispatches a DOM event inside the page.
+Element.prototype.requestPointerLock = function () { return Promise.reject(new Error('review harness: no pointer lock')); };
+try { document.exitPointerLock(); } catch (e) {}
 let q = [], t = performance.now();
 window.requestAnimationFrame = cb => { q.push(cb); return q.length; };
 const tick = () => new Promise(r => { const c = new MessageChannel(); c.port1.onmessage = () => r(); c.port2.postMessage(0); });

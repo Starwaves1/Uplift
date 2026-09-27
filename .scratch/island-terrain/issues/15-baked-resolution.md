@@ -14,14 +14,14 @@ float pyramid for distant LOD, and no 268 MB Float32Array.
 
 **Blocked by:** None — can start immediately.
 
-**Status:** claimed
+**Status:** resolved
 
 - [x] The generator's final stage and export run at ≥ 8192² (7.8 m or finer), in reasonable time and memory on this machine
 - [x] The whole shipped page stays within the artifact limits (every file ≤ 16 MB, total ≤ 64 MB with the material textures), measured and written down in the ticket
 - [x] The game loads it in a few seconds with no stall: JS memory and GPU memory are measured and reasonable (no full-size float copies)
 - [x] Heights in JS (collision) and GLSL (render) still match exactly
 - [x] Round trip verified (max error ≤ the quantisation step), including below −400 m (the glacial fjords)
-- [ ] Reviewed in spectator mode against today's island from the same viewpoints, with screenshots shown to the user
+- [x] Reviewed in spectator mode against today's island from the same viewpoints, with screenshots shown to the user
 
 ## Comments
 
@@ -59,3 +59,11 @@ float pyramid for distant LOD, and no 268 MB Float32Array.
     landscape's 31 m grid, plain in the shading at 4×.
   - **Side effect for the lead**: the volcano-dammed lake at the valley head spills at ~(43.9, 29.1) km over a narrow
     sediment barrier; at 8192² it is ~7 m lower (26.6 m vs 33.2 m, 27 vs 32 km²).
+
+## Answer
+
+Merged into main as a7c3c2a (2026-09-27). The island is stored at 8192² (7.8 m) in format 2: island.bin plus island-1.bin, 43 MB
+of the 64 MB budget with materials. Heights are 16-bit on the CPU and GPU, and JS and GLSL agree within millimetres.
+The user saw the before/after shots. Accepted side effects: the volcano-dammed lake sits ~7 m lower at 8192²; the finer
+grid exposes droplet-erosion artefacts (beaded channels, radial streaks on fans), to be fixed in the generator
+integration round.

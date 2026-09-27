@@ -7,6 +7,7 @@ usage: python finalize.py tag N0 N outtag
 """
 import sys, os, time
 import numpy as np
+from scipy import ndimage
 import torch
 import torch.nn.functional as F
 import fields as fx
@@ -85,7 +86,6 @@ retreat = 90 + 260 * np.clip(0.5 + 0.6 * g(fx.fbm(N, 60, 3, 82)), 0, 1)
 if land0 is not None:
     # the fjords are sheltered from the waves: where the nearest sea is a drowned glacial trough (land before the ice
     # ages), the walls plunge straight into the water — no wave-cut platform, no cutting back
-    from scipy import ndimage
     _, (sy, sx) = ndimage.distance_transform_edt(~passes.open_sea_mask(h), return_indices=True)
     style = style * (1 - np.clip(ndimage.gaussian_filter(land0[sy, sx].astype(np.float32), 150 / dx) * 1.5, 0, 1))
 h_pre_coast = h.copy()
@@ -94,7 +94,10 @@ lap(f'coast: {len(stacks)} stacks')
 h_carved = h
 h = passes.bathymetry(h, dx, g(fx.fbm(N, 20, 4, 91)))
 if land0 is not None:
-    h = np.where(land0 & (h_carved < h), h_carved, h)
+    # the glaciers' drowned troughs keep their depth; blended across the preglacial coast over ~200 m, so the fjords'
+    # sills ramp up into the shelf instead of stepping at a line
+    kw = np.clip(ndimage.gaussian_filter(land0.astype(np.float32), 120 / dx) * 2.0 - 0.5, 0, 1)
+    h = h + kw * (np.minimum(h_carved, h) - h)
 lap('sea floor')
 
 # ── lakes: water in the closed basins (the caldera, tarns, hollows in the valley floors) ──

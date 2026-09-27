@@ -152,12 +152,15 @@ def plastic2d(B, foot, n, dx, c):
 
 
 def erosion(Q, S, B, rec, dist, fixed, n, dx, Kg, Qmin=2e3, Hmin=15.0, umax=800.0, kappa=1.5, look=6, l=1.0, uref=100.0,
-            c=13.0):
+            c=13.0, acc=None, kg_rel=None):
     """Q, S, B: flat arrays (ice discharge, flow-line plastic ice surface, bed) on the flow network. Returns (E: bed
     erosion rate m/yr, S: ice surface m, Hi: ice thickness m), n×n, spread over each glacier's full width. The surface
     is level across a glacier (from its nearest flow line), but nowhere higher than the 2D plastic surface from the ice
     margins — so a glacier running beside the sea is thin on its seaward side; the erosion takes the plug-flow profile,
-    and where glaciers overlap the bigger value wins."""
+    and where glaciers overlap the bigger value wins. acc (flat bool): the accumulation zone, where snow lies on every
+    slope gentle enough to hold it — the ice field there is part of the footprint (thin near its edges, thick in the
+    hollows: the cirque and plateau ice the valley glaciers flow out of). kg_rel (flat): the rock's susceptibility to
+    quarrying (fracture density), a multiplier on Kg."""
     W = width(Q)
     ice = (Q > Qmin) & ~fixed
     W2, S2, ice2, fixed2, Bn = W.reshape(n, n), S.reshape(n, n), ice.reshape(n, n), fixed.reshape(n, n), B.reshape(n, n)
@@ -180,14 +183,19 @@ def erosion(Q, S, B, rec, dist, fixed, n, dx, Kg, Qmin=2e3, Hmin=15.0, umax=800.
         nearer = inside & (d < dbest)
         Ss = np.where(nearer, S2[iy, ix], Ss)
         dbest = np.where(nearer, d, dbest)
-    foot = np.isfinite(dbest) & ~fixed2                                       # no grounded ice over the sea: it calves
+    glac = np.isfinite(dbest)
+    field = acc.reshape(n, n) if acc is not None else np.zeros((n, n), bool)
+    foot = (glac | field) & ~fixed2                                           # no grounded ice over the sea: it calves
     Sp = plastic2d(B, foot.ravel(), n, dx, c).reshape(n, n)
-    Ss = np.where(foot, np.minimum(Ss, Sp), Bn)
+    Ss = np.where(glac, np.minimum(Ss, Sp), np.where(foot, Sp, Bn))
     Sc = np.minimum(S, Sp.ravel())
     Ec = _centre_rate(B, Sc, Q, W, fixed, Kg, Qmin, Hmin, umax, l, uref).reshape(n, n)
     E = Ec.copy()
     for iy, ix, prof in spread:
         E = np.maximum(E, Ec[iy, ix] * prof)
+    if kg_rel is not None:
+        E = E * kg_rel.reshape(n, n)
+    Ss = np.where(foot, Ss, Bn)
     Hi = np.maximum(Ss - Bn, 0.0)
     Sn = np.where(Hi > 0, Ss, Bn)
     # the adverse-slope limit on every ice cell, along its own path downstream under the spread surface — also where a

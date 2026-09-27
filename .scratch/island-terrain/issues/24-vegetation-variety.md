@@ -20,6 +20,7 @@ working.
 - [ ] Each region has its own researched species mix, with realistic growth forms
 - [ ] Clear size variety within stands, plus occasional veteran and ancient trees that stand out as landmarks
 - [ ] Wind-shaped trees on exposed coasts and ridges (a wind-exposure map comes from ticket 30 later)
+- [ ] Forest edges look natural from above: no hard-edged uniform blobs; density thins irregularly at edges (the user saw a patchwork of hard forest blobs from the air)
 - [ ] Impostors and LODs still work to 10 km; frame time measured; flown and approved by the user
 
 ## Comments

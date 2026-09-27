@@ -921,6 +921,21 @@ void main(){
     const far = place === 0 ? 560 + 700 * hs(gx, gz, 15) : FAR_MESH;
     push(k, x, h - 0.45 - (1 - ny) * 6, z, s, hs(gx, gz, 11) * TAU, tint, hs(gx, gz, 14), far);
   }
+  // and out of the island's lakes: their basins (an id mask from the map file) below each lake's level plus a margin
+  const LK = (() => {
+    const M = typeof window !== 'undefined' && window.ISLAND_MAPS;
+    if (!M || !M.lakeMask || !M.lakes || !M.lakes.length || typeof ISLAND === 'undefined' || !ISLAND) return null;
+    const lvl = new Float32Array(256).fill(-1e9);
+    for (const l of M.lakes) lvl[l.id] = l.level;
+    return { m: M.lakeMask, n: M.nl, lvl, k: M.nl / ISLAND.size, o: ISLAND.origin };
+  })();
+  function inLake(x, z, h, pad) {
+    if (!LK) return false;
+    const u = Math.floor((x - LK.o) * LK.k), v = Math.floor((z - LK.o) * LK.k);
+    if (u < 0 || v < 0 || u >= LK.n || v >= LK.n) return false;
+    const id = LK.m[v * LK.n + u];
+    return id > 0 && h < LK.lvl[id] + pad;
+  }
   // keep plants off buildings, ruins and walls (LANDMARKS loads after this file and may be absent in isolated builds)
   const occupied = (x, z, pad) => { try { return LANDMARKS.occupied(x, z, pad); } catch (e) { return false; } };
   // one 8 m cell's tree candidate: forest, copse or lone meadow tree (shared by the near tiles and the far forest)
@@ -944,7 +959,7 @@ void main(){
     const h = terrainH(x, z, 1);
     if (h > 3 + hs(gx, gz, 6) * 2.5 && hs(gx, gz, 7) < ss(625, 520, h)) {
       const ex = h - terrainH(x + 1.5, z, 1), ez = h - terrainH(x, z + 1.5, 1), ny = 1.5 / Math.sqrt(ex * ex + 2.25 + ez * ez);
-      if (ny > 0.84 + (hs(gx, gz, 5) - 0.5) * 0.03 && !occupied(x, z, 4.5)) { lazyGrid(3); lazyGrid(4); placeTree(gx, gz, x, z, h, ny, fm, place); }
+      if (ny > 0.84 + (hs(gx, gz, 5) - 0.5) * 0.03 && !inLake(x, z, h, 1.5) && !occupied(x, z, 4.5)) { lazyGrid(3); lazyGrid(4); placeTree(gx, gz, x, z, h, ny, fm, place); }
     }
   }
   // one cell's bush candidate: meadows, forest edges and copse fringes
@@ -963,7 +978,7 @@ void main(){
     const hc = bil(hgrid), ny = slopeNy(hgrid);
     if (!(hc > 2 && hc < 620 && ny > 0.82)) return;
     const h = terrainH(x, z, 1);
-    if (h > 3.5 + hs(gx, gz, 23) * 2 && h < 600 && !occupied(x, z, 1.5)) {
+    if (h > 3.5 + hs(gx, gz, 23) * 2 && h < 600 && !inLake(x, z, h, 1.0) && !occupied(x, z, 1.5)) {
       const k = hs(gx, gz, 24) < (fm < 0.05 ? 0.3 : 0.1) ? K_BLOSSOM : hs(gx, gz, 25) < 0.4 ? K_LOWBUSH : K_BUSH;
       push(k, x, h - 0.25 - (1 - ny) * 3, z, (0.6 + 0.75 * hs(gx, gz, 26)) * (1 - 0.3 * ss(450, 600, h)), hs(gx, gz, 27) * TAU,
         hs(gx, gz, 28), hs(gx, gz, 29), 280 + 160 * hs(gx, gz, 30));
@@ -1606,7 +1621,7 @@ void main(){
         const fm = bil(gfm);
         if (fm > 0.55 || r < fm * 1.8) continue;
         const h = bil(ggrid);
-        if (h < 3.2 + hs(gx, gz, 34) * 1.5 || h > 600 + hs(gx, gz, 42) * 30 || slopeNy(ggrid) < 0.8 || occupied(x, z, 0.3)) continue;
+        if (h < 3.2 + hs(gx, gz, 34) * 1.5 || h > 600 + hs(gx, gz, 42) * 30 || slopeNy(ggrid) < 0.8 || inLake(x, z, h, 0.4) || occupied(x, z, 0.3)) continue;
         let k;
         const patch = ss(0.5, 0.78, bil(gpat));
         if (hs(gx, gz, 35) < patch * 0.5 + 0.03) {

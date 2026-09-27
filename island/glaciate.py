@@ -36,7 +36,8 @@ BMAX, BMIN = 1.5, -6.0             # most snow a cell gathers, most ice it melts
 KG = 1e-4                          # bed erosion per m/yr of sliding, at 100 m/yr
 L_EXP = 2.0                        # erosion ∝ sliding^L_EXP (Herman et al. 2015 found ~2.3 under Franz Josef Glacier)
 CAP = 25.0                         # most a cell may be cut in one step (m)
-SC_ICE = 0.5                       # glacier walls stand this much steeper (tan) than the rock's usual repose
+SC_ICE = 0.8                       # glacier walls stand this much steeper (tan) than the rock's usual repose
+SCOUR = 10.0                       # glacial erosion (m) that leaves a fresh rock face
 C_PLASTIC = 13.0                   # τ_b/(ρ_i g) (m) of the plastic ice surface: a basal shear stress of ~115 kPa
 QMIN = 2e3                         # least discharge (m³/yr) that counts as ice
 ICE_ROUTE = 0.9                    # ice flows down its own surface: routing sees this share of last step's ice thickness
@@ -61,8 +62,9 @@ rain = g(D.rain)
 kappa = 0.004 + 0.03 * w_med * (1 - plat) + 0.02 * np.clip(1 - g(D.U) / 1.2e-3, 0, 1) * (1 - w_nord) + 0.03 * w_nord
 edge = np.zeros((N, N), bool); edge[0, :] = edge[-1, :] = edge[:, 0] = edge[:, -1] = True
 edge = edge.ravel()
-# the equilibrium line: low on the wet windward Nordic side, high in the dry south; the young volcano stays bare
-ELA = 320 * w_nord + 1150 * w_alp + 1700 * w_med + 1500 * plat + 3500 * w_volc
+# the equilibrium line: low on the wet windward Nordic side, higher over the Alpine ranges (about a third of their summit
+# heights, as in the Alps at the last glacial maximum), high in the dry south; the young volcano stays bare
+ELA = 320 * w_nord + 750 * w_alp + 1700 * w_med + 1500 * plat + 3500 * w_volc
 
 
 def rock(hc):
@@ -80,7 +82,16 @@ def open_sea(hc):
     return edge | np.isin(lab, ids[ids > 0]).ravel()
 
 
-def glacial_step(h, fixed, Hi):
+R_WALL = max(1, round(190 / dx))   # how far past the ice (cells) its walls stand steeper
+
+
+def fresh_rock(ice, gcut):
+    """Glacier walls stand steeper than weathered slopes: next to the ice, and wherever the ice has scoured fresh rock
+    (they stay steep through the short interglacials — rock walls weather back over far longer times)."""
+    return ndimage.binary_dilation((ice | (gcut > SCOUR)).reshape(N, N), iterations=R_WALL).ravel()
+
+
+def glacial_step(h, fixed, Hi, gcut):
     hf = lem.priority_flood(h + ICE_ROUTE * Hi, fixed, N, 1e-3)     # thick ice spills over low divides into the troughs
     rec, dist = lem.receivers(hf, fixed, N, dx)
     st = lem.stack_order(rec, N)
@@ -88,17 +99,19 @@ def glacial_step(h, fixed, Hi):
     b[fixed] = 0.0
     Q = lem.ice_flux(st, rec, b, dx)                                # melt over each glacier's width
     S = glacial.surface(st, rec, dist, h, Q, fixed, C_PLASTIC, QMIN)
-    E, Sn, Hn = glacial.erosion(Q, S, h, rec, dist, fixed, N, dx, KG, QMIN, l=L_EXP, c=C_PLASTIC)
+    E, Sn, Hn = glacial.erosion(Q, S, h, rec, dist, fixed, N, dx, KG, QMIN, l=L_EXP, c=C_PLASTIC,
+                                look=max(3, round(375 / dx)))              # the adverse slope over ~375 m downstream
     E, Hn = E.ravel(), Hn.ravel()
     ice = Hn > 5.0
-    h -= np.where(fixed, 0.0, np.minimum(E * G_DT, CAP))
+    cut = np.where(fixed, 0.0, np.minimum(E * G_DT, CAP))
+    h -= cut
+    gcut += cut
     # rivers work the ice-free land (glaciated cells are left to the ice)
     A = lem.drainage_area(st, rec, dx * dx, rain)
     Kn, Scn = rock(h)
     lem.erode(h, st, rec, dist, A, np.where(ice, 0.0, Kn), np.zeros(N * N), G_DT, 0.5, fixed | ice, 1.0, dx * dx, 3)
     h += np.where(fixed, 0.0, U * G_DT)
-    near = ndimage.binary_dilation(ice.reshape(N, N), iterations=3).ravel()
-    lem.hillslope(h, fixed, N, dx, np.where(near, Scn + SC_ICE, Scn), kappa, G_DT, 10, 0.06)
+    lem.hillslope(h, fixed, N, dx, np.where(fresh_rock(ice, gcut), Scn + SC_ICE, Scn), kappa, G_DT, 10, 0.06)
     return Hn, Q, E
 
 
@@ -108,9 +121,10 @@ fixed0 = open_sea(h)                        # the preglacial sea: base level thr
 land0 = ~fixed0
 h_start = h.copy()
 Hi = np.zeros(N * N)
+gcut = np.zeros(N * N)                       # glacial erosion so far (m)
 for c in range(CYCLES):
     for s in range(G_STEPS):
-        Hi, Q, E = glacial_step(h, fixed0, Hi)
+        Hi, Q, E = glacial_step(h, fixed0, Hi, gcut)
     Hmax, Qmax, Emax = Hi.copy(), Q.copy(), E.copy()
     ice = Hi > 5
     print(f'cycle {c}: ice {100 * ice[land0].mean():4.1f}% of land  thickest {Hi.max():5.0f} m  fastest cut {1000 * E.max():5.1f} mm/yr'
@@ -119,6 +133,7 @@ for c in range(CYCLES):
     for s in range(I_STEPS):
         fx_i = open_sea(h)
         Kn, Scn = rock(h)
+        Scn = np.where(fresh_rock(np.zeros(N * N, bool), gcut), Scn + SC_ICE, Scn)
         lem.step(h, fx_i, N, dx, Kn, U, rain, I_DT, 0.5, Scn, 1e-3, rng.random(N * N), kappa, 10, 1.0)
 
 H = h.reshape(N, N)
@@ -130,6 +145,7 @@ for nm, w in (('nordic', w_nord), ('alpine', w_alp), ('med', w_med), ('volcano',
 np.save(f'{OUT}/h_{TAG}_{N}.npy', H.astype(np.float32))
 np.save(f'{OUT}/land0_{TAG}_{N}.npy', land0.reshape(N, N))
 np.save(f'{OUT}/ice_{TAG}_{N}.npy', Hmax.reshape(N, N).astype(np.float32))
+np.save(f'{OUT}/gcut_{TAG}_{N}.npy', gcut.reshape(N, N).astype(np.float32))    # glacially scoured rock (materials)
 
 # previews: the last glacial maximum's ice over the landscape, then the drowned result
 preview.render(H, dx, f'/tmp/_g{os.getpid()}.png')

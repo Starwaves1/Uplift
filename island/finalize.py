@@ -106,6 +106,8 @@ json.dump([{'id': i, 'level': round(lv, 2), 'area': round(a), 'bbox': [int(v) fo
 lap(f'lakes: {len(lake_tab)} (largest {max([a for _, _, a, _ in lake_tab], default=0) / 1e6:.2f} km²)')
 
 np.save(f'{OUT}/h_{TOUT}_{N}.npy', h.astype(np.float32))
+if land0 is not None:
+    np.save(f'{OUT}/land0_{TOUT}_{N}.npy', land0)          # for fjordstats.py / fjordviews.py on the finished grid
 
 # ── data maps (for materials): river flow, sediment, scree, bare rock ──
 sea = passes.open_sea_mask(h)

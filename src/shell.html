@@ -1,0 +1,215 @@
+<title>Gravity Loom</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Silkscreen&family=VT323&display=swap">
+<style>
+:root {
+  color-scheme: dark;
+  --b0:#07061a; --b1:#161336; --b2:#2b2560; --b3:#4d4596; --b4:#8f86cf; --b5:#ece6ff;
+  --a0:#7a2446; --a1:#f0645a; --a2:#ffd29c;
+  --c0:#1b4d6b; --c1:#39b3c9; --c2:#b8f3ff;
+  --px: 3px;
+  --pixel: 'Silkscreen', ui-monospace, 'Courier New', monospace;
+  --term: 'VT323', ui-monospace, 'Courier New', monospace;
+  --cur: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='17' height='17' shape-rendering='crispEdges'%3E%3Cpath d='M7 0h3v6H7zM7 11h3v6H7zM0 7h6v3H0zM11 7h6v3h-6zM7 7h3v3H7z' fill='%23000'/%3E%3Cpath d='M8 1h1v4H8zM8 12h1v4H8zM1 8h4v1H1zM12 8h4v1h-4zM8 8h1v1H8z' fill='%23fff'/%3E%3C/svg%3E") 8 8, crosshair;
+}
+[hidden] { display: none !important; }
+html, body { height: 100%; }
+body {
+  margin: 0; overflow: hidden; background: var(--b0); color: var(--b5);
+  font-family: var(--term); font-size: 20px; cursor: var(--cur);
+  user-select: none; -webkit-user-select: none; -webkit-tap-highlight-color: transparent;
+}
+#view { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
+
+/* screen-door transparency + pixel-notched corners */
+.door {
+  background:
+    repeating-conic-gradient(var(--b0) 0 25%, transparent 0 50%) 0 0 / calc(var(--px) * 2) calc(var(--px) * 2),
+    color-mix(in srgb, var(--b1) 72%, transparent);
+}
+.px {
+  --n: var(--px);
+  clip-path: polygon(0 var(--n), var(--n) var(--n), var(--n) 0, calc(100% - var(--n)) 0, calc(100% - var(--n)) var(--n),
+    100% var(--n), 100% calc(100% - var(--n)), calc(100% - var(--n)) calc(100% - var(--n)), calc(100% - var(--n)) 100%,
+    var(--n) 100%, var(--n) calc(100% - var(--n)), 0 calc(100% - var(--n)));
+}
+
+.screen {
+  position: fixed; inset: 0; box-sizing: border-box; padding-inline: 16px;
+  display: flex; flex-direction: column; align-items: center; pointer-events: none;
+}
+.screen > * { pointer-events: auto; }
+button { cursor: var(--cur); }
+
+/* ── title menu ── */
+#menu { justify-content: flex-end; gap: 14px; padding-block: 0 max(20px, 5vh); }
+.modes { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; width: min(780px, 100%); }
+.mode {
+  all: unset; box-sizing: border-box; display: flex; flex-direction: column; gap: 8px;
+  padding: 16px 20px 14px; color: var(--b5); box-shadow: inset 0 0 0 var(--px) var(--b3);
+  --acc: var(--a1); --acc2: var(--a2);
+}
+.mode[data-acc="b"] { --acc: var(--c1); --acc2: var(--c2); }
+.mode:hover, .mode:focus-visible {
+  box-shadow: inset 0 0 0 var(--px) var(--acc);
+  background:
+    repeating-conic-gradient(var(--b1) 0 25%, transparent 0 50%) 0 0 / calc(var(--px) * 2) calc(var(--px) * 2),
+    color-mix(in srgb, var(--b2) 80%, transparent);
+}
+.mode-top { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+.mode-name { font-family: var(--pixel); font-size: 32px; line-height: 1; letter-spacing: .04em; }
+.mode-name::before { content: '\25B8'; display: inline-block; width: 0; overflow: hidden; color: var(--acc); transition: width .12s steps(2); }
+.mode:hover .mode-name::before, .mode:focus-visible .mode-name::before { width: 1ch; }
+.mode-tag { font-family: var(--pixel); font-size: 16px; color: var(--acc); letter-spacing: .06em; white-space: nowrap; }
+.mode-desc { font-size: 22px; line-height: 1.05; color: var(--b4); text-wrap: pretty; }
+.mode-best { font-family: var(--pixel); font-size: 16px; color: var(--b3); display: flex; justify-content: space-between; }
+.mode-best b { font-weight: 400; color: var(--acc2); font-variant-numeric: tabular-nums; }
+
+.legend {
+  list-style: none; margin: 0; padding: 12px 18px; box-sizing: border-box; width: min(780px, 100%);
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 10px 22px;
+}
+.legend li { display: flex; align-items: center; gap: 10px; color: var(--b4); font-size: 20px; line-height: 1; }
+.legend b { display: block; font-family: var(--pixel); font-size: 16px; font-weight: 400; color: var(--b5); margin-bottom: 4px; letter-spacing: .05em; }
+.mico svg { width: 18px; height: 32px; display: block; }
+.foot { display: flex; align-items: center; gap: 18px; width: min(780px, 100%); justify-content: space-between; color: var(--b3); font-size: 18px; }
+.link { all: unset; font-family: var(--pixel); font-size: 16px; color: var(--b4); padding: 4px 2px; letter-spacing: .05em; }
+.link:hover, .link:focus-visible { color: var(--c2); }
+.link::before { content: '['; color: var(--b3); margin-right: 4px; }
+.link::after { content: ']'; color: var(--b3); margin-left: 4px; }
+
+/* ── shared panel bits ── */
+.panel {
+  display: flex; flex-direction: column; gap: 14px; padding: 22px; box-sizing: border-box;
+  width: min(440px, 100%); box-shadow: inset 0 0 0 var(--px) var(--b3);
+}
+.panel.wide { width: min(700px, 100%); }
+.kicker { margin: 0; font-family: var(--pixel); font-size: 16px; color: var(--c1); letter-spacing: .1em; }
+.btn {
+  all: unset; box-sizing: border-box; text-align: center; font-family: var(--pixel); font-size: 16px;
+  letter-spacing: .06em; padding: 12px 18px; color: var(--b5); background: var(--b1);
+  box-shadow: inset 0 0 0 var(--px) var(--b3);
+}
+.btn:hover, .btn:focus-visible { box-shadow: inset 0 0 0 var(--px) var(--c1); color: var(--c2); }
+.btn.primary { background: var(--a1); color: var(--b0); box-shadow: none; }
+.btn.primary:hover, .btn.primary:focus-visible { background: var(--a2); color: var(--b0); }
+.row { display: flex; gap: 10px; flex-wrap: wrap; }
+.row .btn { flex: 1 1 140px; }
+
+#pause { justify-content: center; padding-block: 16vh 0; }
+#pause .panel { width: min(320px, 100%); }
+#settings { justify-content: center; z-index: 5; background: color-mix(in srgb, var(--b0) 40%, transparent); pointer-events: auto; }
+
+#over { justify-content: flex-end; padding-block: 0 max(18px, 4vh); }
+.over-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.chip { font-family: var(--pixel); font-size: 16px; background: var(--c1); color: var(--b0); padding: 3px 10px; animation: blink 1s steps(2) infinite; }
+@keyframes blink { 50% { background: var(--c2); } }
+.big { font-family: var(--pixel); font-size: 48px; line-height: 1; letter-spacing: .04em; font-variant-numeric: tabular-nums; }
+.stats { margin: 0; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px 18px; }
+.stats div { display: flex; flex-direction: column; gap: 2px; }
+.stats dt { font-size: 20px; line-height: 1; color: var(--b4); text-transform: uppercase; }
+.stats dd { margin: 0; font-family: var(--pixel); font-size: 16px; color: var(--b5); font-variant-numeric: tabular-nums; }
+
+/* ── settings controls ── */
+.set { display: flex; align-items: center; justify-content: space-between; gap: 14px; font-family: var(--pixel); font-size: 16px; color: var(--b4); }
+.seg { display: flex; gap: 4px; }
+.seg button, .tog {
+  all: unset; font-family: var(--pixel); font-size: 16px; padding: 5px 9px; color: var(--b4);
+  box-shadow: inset 0 0 0 2px var(--b2);
+}
+.seg button:hover, .tog:hover, .seg button:focus-visible, .tog:focus-visible { color: var(--c2); box-shadow: inset 0 0 0 2px var(--c1); }
+.seg button[aria-pressed="true"], .tog[aria-pressed="true"] { background: var(--c1); color: var(--b0); box-shadow: none; }
+input[type=range] { -webkit-appearance: none; appearance: none; width: 170px; height: 8px; background: var(--b2); margin: 0; }
+input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 14px; height: 20px; background: var(--c1); border: 0; }
+input[type=range]::-moz-range-thumb { width: 14px; height: 20px; background: var(--c1); border: 0; border-radius: 0; }
+input[type=range]:focus-visible { outline: 2px solid var(--c2); outline-offset: 3px; }
+
+#btnPause {
+  all: unset; position: fixed; top: calc(env(safe-area-inset-top, 0px) + 10px); left: 50%; transform: translateX(-50%);
+  font-family: var(--pixel); font-size: 16px; color: var(--b4); padding: 6px 12px; letter-spacing: .08em;
+  box-shadow: inset 0 0 0 2px var(--b2); background: color-mix(in srgb, var(--b0) 60%, transparent);
+}
+#btnPause:hover, #btnPause:focus-visible { color: var(--c2); box-shadow: inset 0 0 0 2px var(--c1); }
+body[data-mode="play"] { cursor: var(--cur); }
+
+#nogl { position: fixed; inset: 0; display: grid; place-items: center; padding: 16px; text-align: center; font-family: var(--pixel); font-size: 16px; color: var(--b5); }
+
+@media (max-width: 640px) {
+  .modes { grid-template-columns: 1fr; }
+  .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .legend { justify-content: flex-start; }
+  .big { font-size: 36px; }
+}
+@media (max-height: 640px) { .legend, .foot span { display: none; } .mode-desc { display: none; } }
+@media (prefers-reduced-motion: reduce) { .chip { animation: none; } .mode-name::before { transition: none; } }
+</style>
+
+<canvas id="view" aria-label="Gravity Loom game view"></canvas>
+
+<section id="menu" class="screen">
+  <div class="modes">
+    <button class="mode door px" id="btnRun" type="button" data-acc="a">
+      <span class="mode-top"><span class="mode-name">RUN</span><span class="mode-tag">3 HULL · TIDE</span></span>
+      <span class="mode-desc">A void tide creeps in from behind. Keep catching new planets and don't let it reach you.</span>
+      <span class="mode-best"><span>BEST</span><b id="bestRun">0000000</b></span>
+    </button>
+    <button class="mode door px" id="btnDrift" type="button" data-acc="b">
+      <span class="mode-top"><span class="mode-name">DRIFT</span><span class="mode-tag">NO DAMAGE</span></span>
+      <span class="mode-desc">No tide, no hull. Swing from world to world at your own pace and leave a thread behind you.</span>
+      <span class="mode-best"><span>BEST</span><b id="bestDrift">0000000</b></span>
+    </button>
+  </div>
+  <ul class="legend door px">
+    <li><span class="mico" data-m="L"></span><span><b>HOLD LEFT</b>catch the planet by your cursor</span></li>
+    <li><span class="mico" data-m="U"></span><span><b>LET GO</b>fling along the dotted path</span></li>
+    <li><span class="mico" data-m="R"></span><span><b>RIGHT CLICK</b>pulse toward cursor, pull in stardust</span></li>
+  </ul>
+  <div class="foot">
+    <button class="link" id="btnSettings" type="button">SETTINGS</button>
+    <span>Perfect catches skim close. Each planet plays its own chord.</span>
+  </div>
+</section>
+
+<section id="pause" class="screen" hidden>
+  <div class="panel door px">
+    <button class="btn primary px" id="btnResume" type="button">RESUME</button>
+    <button class="btn px" id="btnSettings2" type="button">SETTINGS</button>
+    <button class="btn px" id="btnEnd" type="button">END RUN</button>
+  </div>
+</section>
+
+<section id="over" class="screen" hidden>
+  <div class="panel wide door px">
+    <div class="over-head"><p class="kicker" id="overWhy">HULL BREACHED</p><span class="chip" id="overBest" hidden>NEW BEST</span></div>
+    <div class="big" id="overScore">0000000</div>
+    <dl class="stats">
+      <div><dt>Planets woven</dt><dd id="stPlanets">0</dd></div>
+      <div><dt>Perfect catches</dt><dd id="stPerfect">0</dd></div>
+      <div><dt>Longest chain</dt><dd id="stChain">0</dd></div>
+      <div><dt>Stardust</dt><dd id="stDust">0</dd></div>
+      <div><dt>Distance</dt><dd id="stDist">0</dd></div>
+      <div><dt>Best</dt><dd id="stBest">0</dd></div>
+    </dl>
+    <div class="row">
+      <button class="btn primary px" id="btnAgain" type="button">WEAVE AGAIN</button>
+      <button class="btn px" id="btnMenu" type="button">MENU</button>
+    </div>
+  </div>
+</section>
+
+<section id="settings" class="screen" hidden>
+  <div class="panel door px" role="dialog" aria-label="Settings">
+    <p class="kicker">SETTINGS</p>
+    <div class="set"><label for="setVol">VOLUME</label><input type="range" id="setVol" min="0" max="100"></div>
+    <div class="set"><span>MUSIC</span><button class="tog" id="setMusic" type="button">ON</button></div>
+    <div class="set"><span>PIXELS</span><div class="seg" id="setPx"><button type="button" data-v="chunky">CHUNKY</button><button type="button" data-v="fine">FINE</button><button type="button" data-v="crisp">CRISP</button></div></div>
+    <div class="set"><span>DITHER</span><div class="seg" id="setDither"><button type="button" data-v="8">8X8</button><button type="button" data-v="4">4X4</button></div></div>
+    <div class="set"><span>FPS</span><button class="tog" id="setFps" type="button">ON</button></div>
+    <button class="btn primary px" id="btnCloseSet" type="button">DONE</button>
+  </div>
+</section>
+
+<button id="btnPause" type="button" hidden>II PAUSE</button>
+<div id="nogl" hidden>This game needs WebGL2. Try a current Chrome, Edge, Firefox or Safari.</div>
+<!--SCRIPTS-->

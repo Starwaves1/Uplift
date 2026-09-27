@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Windborne model viewer</title>
+<style>
+html, body { margin: 0; height: 100%; overflow: hidden; background: #9cc9ec; }
+#view { width: 100%; height: 100%; display: block; }
+#info { position: fixed; left: 8px; top: 8px; font: 12px/1.4 ui-monospace, monospace; color: #0b1a2a; background: rgba(255,255,255,.7); padding: 4px 8px; border-radius: 4px; white-space: pre; }
+</style></head>
+<body>
+<canvas id="view"></canvas>
+<div id="info"></div>
+<script src="core.js"></script>
+<script src="mesh.js"></script>
+<script src="post.js"></script>
+<script src="atmosphere.js"></script>
+<script src="shadow.js"></script>
+<script>
+  // ?m=name loads models/name.js (comma-separated list allowed)
+  for (const m of (new URLSearchParams(location.search).get('m') || 'flora').split(',')) {
+    document.write('<script src="models/' + m + '.js?t=' + Date.now() + '"><\/script>');
+  }
+</script>
+<script src="viewer.js?t=0"></script>
+</body></html>

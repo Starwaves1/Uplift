@@ -1,0 +1,123 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>terrain proto</title>
+<style>body{margin:0;background:#111;color:#ccc;font:12px monospace} canvas{display:block}</style></head>
+<body><canvas id="c" width="900" height="900"></canvas><div id="info"></div>
+<script>
+const clamp = (x, a, b) => (x < a ? a : x > b ? b : x);
+const ss = (a, b, x) => { let t = (x - a) / (b - a); t = t < 0 ? 0 : t > 1 ? 1 : t; return t * t * (3 - 2 * t); };
+function hash2(x, z) {
+  let h = (Math.imul(x, 374761393) + Math.imul(z, 668265263)) | 0;
+  h = Math.imul(h ^ (h >>> 13), 1274126177);
+  h ^= h >>> 16;
+  return (h & 0xffffff) / 16777216;
+}
+function vn(x, z) {
+  const ix = Math.floor(x), iz = Math.floor(z);
+  const fx = x - ix, fz = z - iz;
+  const ux = fx * fx * fx * (fx * (fx * 6 - 15) + 10), uz = fz * fz * fz * (fz * (fz * 6 - 15) + 10);
+  const a = hash2(ix, iz), b = hash2(ix + 1, iz), c = hash2(ix, iz + 1), d = hash2(ix + 1, iz + 1);
+  return a + (b - a) * ux + (c - a) * uz + (a - b - c + d) * ux * uz;
+}
+// value noise with derivatives → [v, dv/dx, dv/dz] (written into out)
+const VND = [0, 0, 0];
+function vnd(x, z) {
+  const ix = Math.floor(x), iz = Math.floor(z);
+  const fx = x - ix, fz = z - iz;
+  const ux = fx * fx * fx * (fx * (fx * 6 - 15) + 10), uz = fz * fz * fz * (fz * (fz * 6 - 15) + 10);
+  const dux = 30 * fx * fx * (fx * (fx - 2) + 1), duz = 30 * fz * fz * (fz * (fz - 2) + 1);
+  const a = hash2(ix, iz), b = hash2(ix + 1, iz), c = hash2(ix, iz + 1), d = hash2(ix + 1, iz + 1);
+  const k1 = b - a, k2 = c - a, k4 = a - b - c + d;
+  VND[0] = a + k1 * ux + k2 * uz + k4 * ux * uz;
+  VND[1] = dux * (k1 + k4 * uz); VND[2] = duz * (k2 + k4 * ux);
+  return VND;
+}
+const WU = [0.9119, 0.4104]; // wind direction (xz): ridges tend to run across it, so windward faces give ridge lift
+// minWave: skip octaves shorter than this (m); 0 = full detail
+function terrainH(x, z, minWave) {
+  minWave = minWave || 0;
+  const wx = vn(x * 0.00035 + 3.1, z * 0.00035 + 1.7) - 0.5, wz = vn(x * 0.00035 + 8.3, z * 0.00035 + 4.9) - 0.5;
+  const px = x + wx * 1100, pz = z + wz * 1100;
+  const c = (0.5 * vn(px * 0.00015 + 0.5, pz * 0.00015 + 0.5) + 0.25 * vn(px * 0.0003 + 2.1, pz * 0.0003 + 7.3)
+    + 0.125 * vn(px * 0.0006 + 4.4, pz * 0.0006 + 1.9)) / 0.875;
+  const land = ss(0.3, 0.5, c), high = ss(0.46, 0.74, c);
+  // regional character
+  const rA = vn(px * 0.00009 + 13.1, pz * 0.00009 + 4.2), rB = vn(px * 0.00011 + 2.9, pz * 0.00011 + 17.7);
+  const canyonR = ss(0.6, 0.7, rA) * land * (1 - high);
+  const mesaR = ss(0.62, 0.72, rB) * land * (1 - high) * (1 - canyonR);
+  // rolling lowland hills
+  let hl = 0, amp = 0.5, f = 1 / 1100;
+  for (let i = 0; i < 4; i++) { hl += amp * vn(px * f + 11.5, pz * f + 2.2); f *= 2.07; amp *= 0.5; }
+  hl /= 0.9375;
+  // mountains: ridged value noise, eroded — each octave damped by the slope accumulated so far (steep faces stay clean,
+  // detail collects in the valleys), in coordinates stretched across the wind
+  const u = px * WU[0] + pz * WU[1], v = -px * WU[1] + pz * WU[0];
+  let qx = u / 1500 + 5.3, qz = v / 2700 + 9.1, a = 0, b = 1, dx = 0, dz = 0, wave = 1500;
+  for (let i = 0; i < 7; i++) {
+    if (wave < minWave) break;
+    const n = vnd(qx, qz);
+    // ridged: the big crests stay sharp (arêtes); the small octaves are rounded so they don't craze every slope
+    const e = i < 3 ? 0 : 0.03, s = n[0] * 2 - 1, sa = Math.sqrt(s * s + e), r = 1 - sa + Math.sqrt(e);
+    const sg = -2 * s / Math.max(sa, 1e-4);                   // d r / d n
+    const gx = sg * n[1], gz = sg * n[2];
+    dx += gx * r; dz += gz * r;
+    a += b * r * r / (1 + (dx * dx + dz * dz) * 0.35);
+    b *= 0.52; wave *= 0.5;
+    const nx = qx * 1.6 - qz * 1.2, nz = qx * 1.2 + qz * 1.6;  // rotate + ×2
+    qx = nx + 1.7; qz = nz + 8.3;
+  }
+  const mtn = Math.pow(a / 1.35, 1.7);
+  let h = -55 + land * 80 + land * hl * 150 + high * (mtn * 1250 + hl * 120);
+  // river valleys (and tributaries in the hills)
+  const vly = Math.abs(vn(px * 0.00036 + 1.9, pz * 0.00036 + 6.4) - 0.5);
+  // broad, shallow floodplains in the lowlands; narrower and much deeper where they cut through mountains
+  const valley = 1 - ss(0, 0.07 + 0.09 * (1 - high), vly);
+  h -= valley * valley * (30 * land + 380 * high);
+  // canyon country: a raised plateau cut by narrow, deep, meandering gorges with stepped walls
+  if (canyonR > 0.001) {
+    // gorge courses: iso-lines of a low-frequency warped noise (wide meanders), walls stepped like bedded rock;
+    // the floor drops to the water table, so the larger ones hold a river or a fjord-like arm of the sea
+    const cw = vn(px * 0.0009 + 2.2, pz * 0.0009 + 7.7) - 0.5;
+    const path = Math.abs(vn(px * 0.00032 + cw * 0.5 + 4.6, pz * 0.00032 - cw * 0.4 + 1.2) - 0.5);
+    const wall = 1 - ss(0.013, 0.036, path);
+    const steps = Math.floor(wall * 4) / 4 + ss(0.72, 1, (wall * 4) % 1) / 4;
+    const plateau = h + 150;
+    h = h + canyonR * (plateau - h) - canyonR * steps * (plateau + 12);
+  }
+  // mesas: flat-topped blocks with cliff edges
+  if (mesaR > 0.001) {
+    const m = vn(px * 0.0014 + 9.4, pz * 0.0014 + 5.5);
+    h += mesaR * (95 * ss(0.54, 0.58, m) + 55 * ss(0.66, 0.7, m));
+  }
+  // fine erosion detail
+  let d = 0; amp = 0.5; f = 1 / 160; let w2 = 160;
+  for (let i = 0; i < 3; i++) { if (w2 < minWave) break; d += amp * (vn(px * f + 3.3, pz * f + 7.1) - 0.5); f *= 2.1; amp *= 0.5; w2 /= 2.1; }
+  h += d * 24 * (0.35 + land) * (1 + high);
+  return h;
+}
+
+// ── render a hillshade map ──
+const cv = document.getElementById('c'), g = cv.getContext('2d');
+function draw(cx, cz, span) {
+  const W = cv.width, H = cv.height, img = g.createImageData(W, H), px = span / W;
+  const hs = new Float32Array(W * H);
+  const t0 = performance.now();
+  for (let j = 0; j < H; j++) for (let i = 0; i < W; i++) hs[j * W + i] = terrainH(cx + (i - W / 2) * px, cz + (j - H / 2) * px, px * 2);
+  const ms = performance.now() - t0;
+  for (let j = 0; j < H; j++) for (let i = 0; i < W; i++) {
+    const h = hs[j * W + i], hx = hs[j * W + Math.min(i + 1, W - 1)] - h, hz = hs[Math.min(j + 1, H - 1) * W + i] - h;
+    let nx = -hx / px, nz = -hz / px; const l = Math.hypot(nx, 1, nz); nx /= l; nz /= l; const ny = 1 / l;
+    const sh = Math.max(0, nx * -0.5 + ny * 0.7 + nz * -0.5);
+    let r, gg, b;
+    if (h < 0) { r = 30; gg = 70 + h * 0.5; b = 110 + h * 0.3; }
+    else if (h < 4) { r = 200; gg = 190; b = 150; }
+    else { const t = Math.min(1, h / 1300); r = 70 + 120 * t; gg = 120 + 60 * t; b = 60 + 100 * t; if (h > 850) { r = gg = b = 235; } }
+    const o = (j * W + i) * 4;
+    img.data[o] = r * (0.35 + sh * 0.9); img.data[o + 1] = gg * (0.35 + sh * 0.9); img.data[o + 2] = b * (0.35 + sh * 0.9); img.data[o + 3] = 255;
+  }
+  g.putImageData(img, 0, 0);
+  let mn = 1e9, mx = -1e9; for (const h of hs) { mn = Math.min(mn, h); mx = Math.max(mx, h); }
+  document.getElementById('info').textContent = `center ${cx},${cz} span ${span} m  min ${mn | 0} max ${mx | 0}  eval ${(ms / (W * H) * 1000).toFixed(2)} µs/sample`;
+}
+window.draw = draw; window.terrainH = terrainH;
+draw(-1758, 2283, 30000);
+</script></body></html>

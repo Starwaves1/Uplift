@@ -1,0 +1,8 @@
+# The island generator's Python env (WSL / Linux, Python 3.11). torch comes from the PyTorch ROCm index (AMD GPU);
+# on an NVIDIA machine swap in the matching CUDA build, the code only needs torch.cuda.
+--extra-index-url https://download.pytorch.org/whl/rocm6.4
+torch==2.8.0+rocm6.4
+numpy==2.4.6
+numba==0.67.0
+scipy==1.17.1
+pillow==12.3.0

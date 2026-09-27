@@ -1,0 +1,208 @@
+<title>Windborne</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Shippori+Mincho:wght@600;800&family=Zen+Maru+Gothic:wght@400;500;700&display=swap">
+<style>
+:root {
+  color-scheme: dark;
+  --ink: #0d1b29;
+  --ink-2: #16293b;
+  --cream: #fbf4e2;
+  --paper: #fffaf0;
+  --sky: #9fd0f0;
+  --seed: #f1b64a;
+  --line: rgba(255, 255, 255, 0.18);
+  --text: #ffffff;
+  --muted: rgba(255, 255, 255, 0.74);
+  --display: 'Shippori Mincho', 'Hiragino Mincho ProN', 'Yu Mincho', Georgia, serif;
+  --ui: 'Zen Maru Gothic', 'Hiragino Maru Gothic ProN', system-ui, sans-serif;
+}
+[hidden] { display: none !important; }
+html, body { height: 100%; }
+body {
+  margin: 0; overflow: hidden; background: var(--ink); color: var(--text);
+  font-family: var(--ui); font-size: 16px; -webkit-font-smoothing: antialiased;
+  user-select: none; -webkit-user-select: none;
+}
+#view { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
+body[data-mode="play"] { cursor: crosshair; }
+#veil { position: fixed; inset: 0; pointer-events: none; opacity: 0; background: radial-gradient(ellipse at 50% 45%, #fbfdff 0%, #eef3f8 70%, #e2eaf2 100%); }
+button { font: inherit; color: inherit; cursor: pointer; }
+.screen { position: fixed; inset: 0; box-sizing: border-box; padding-inline: 16px; }
+
+/* ── title ── */
+.scrim { position: absolute; left: 0; bottom: 0; width: min(980px, 100%); height: 82%; pointer-events: none;
+  background: radial-gradient(ellipse 80% 90% at 0% 100%, rgba(6, 18, 30, 0.66), rgba(6, 18, 30, 0.28) 55%, rgba(6, 18, 30, 0) 80%); }
+.brand {
+  position: absolute; left: clamp(16px, 6vw, 104px); bottom: clamp(20px, 8vh, 100px); right: 16px; max-width: 560px;
+  display: flex; flex-direction: column; gap: 18px; text-shadow: 0 1px 14px rgba(0, 16, 32, 0.35);
+}
+.kicker { margin: 0; font-size: 13px; letter-spacing: 0.24em; text-transform: uppercase; color: var(--muted); font-weight: 500; }
+h1 { margin: 0; font-family: var(--display); font-weight: 800; font-size: clamp(58px, 9.5vw, 128px); line-height: 0.92; letter-spacing: 0.005em; text-wrap: balance; }
+.lede { margin: 0; font-size: 18px; line-height: 1.6; color: rgba(255, 255, 255, 0.92); max-width: 32em; text-wrap: pretty; }
+.actions { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
+.primary {
+  border: 0; border-radius: 999px; padding: 15px 34px; background: var(--cream); color: var(--ink);
+  font-weight: 700; font-size: 17px; letter-spacing: 0.02em; box-shadow: 0 10px 30px rgba(6, 18, 30, 0.35);
+  transition: transform 0.18s ease, background 0.18s ease;
+}
+.primary:hover, .primary:focus-visible { background: var(--paper); transform: translateY(-2px); }
+.ghost {
+  border: 1px solid rgba(255, 255, 255, 0.45); border-radius: 999px; padding: 14px 24px; background: rgba(8, 20, 32, 0.2);
+  font-weight: 500; transition: background 0.18s ease, border-color 0.18s ease;
+}
+.ghost:hover, .ghost:focus-visible { background: rgba(255, 255, 255, 0.12); border-color: #fff; }
+button:focus-visible { outline: 2px solid var(--sky); outline-offset: 3px; }
+.controls { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 22px; }
+.controls li { display: flex; align-items: center; gap: 12px; font-size: 15px; color: var(--muted); line-height: 1.3; }
+.controls b { display: block; color: #fff; font-weight: 700; font-size: 15px; }
+.mouse { width: 22px; height: 32px; flex: none; }
+.mouse .body { fill: rgba(255, 255, 255, 0.08); stroke: rgba(255, 255, 255, 0.85); stroke-width: 1.4; }
+.mouse .hl { fill: var(--seed); }
+.mouse .ln { stroke: rgba(255, 255, 255, 0.85); stroke-width: 1.4; fill: none; }
+.meta { margin: 0; font-size: 14px; color: var(--muted); }
+.meta b { color: var(--seed); font-weight: 700; font-variant-numeric: tabular-nums; }
+
+/* ── HUD ── */
+#hud { position: fixed; inset: 0; pointer-events: none; text-shadow: 0 1px 8px rgba(0, 18, 36, 0.45); }
+#stickRing {
+  position: absolute; left: 50%; top: 50%; width: 120px; height: 120px; transform: translate(-50%, -50%);
+  border-radius: 50%; border: 1.5px solid rgba(255, 255, 255, 0.55); box-sizing: border-box; opacity: 0.3;
+  display: grid; place-items: center;
+}
+#stickRing::before { content: ''; position: absolute; width: 4px; height: 4px; border-radius: 50%; background: rgba(255, 255, 255, 0.7); }
+#stickDot { width: 9px; height: 9px; border-radius: 50%; background: #fff; box-shadow: 0 0 10px rgba(255, 255, 255, 0.8); will-change: transform; }
+.gauges { position: absolute; left: 50%; bottom: 34px; transform: translateX(-50%); display: flex; gap: 34px; align-items: baseline; }
+.gauge { display: flex; align-items: baseline; gap: 5px; }
+.gauge .v { font-size: 24px; font-weight: 700; font-variant-numeric: tabular-nums; min-width: 2.4ch; text-align: right; }
+.gauge .u { font-size: 12px; color: var(--muted); letter-spacing: 0.08em; }
+#hVsArrow { width: 0; height: 0; border-left: 6px solid transparent; border-right: 6px solid transparent; align-self: center; transition: transform 0.2s; }
+#hVsArrow[data-dir="up"] { border-bottom: 9px solid #9be3a8; }
+#hVsArrow[data-dir="down"] { border-top: 9px solid #ffb08a; }
+#hVsArrow[data-dir="level"] { width: 10px; height: 2px; border: 0; background: rgba(255, 255, 255, 0.6); }
+.breath { position: absolute; left: 50%; bottom: 20px; width: 180px; height: 3px; transform: translateX(-50%); background: rgba(255, 255, 255, 0.22); border-radius: 3px; overflow: hidden; }
+#hBreath { width: 100%; height: 100%; background: linear-gradient(90deg, #fff1c8, var(--seed)); transform-origin: left center; }
+.breath[data-low="true"] #hBreath { background: #ff9f7a; }
+.seeds { position: absolute; top: 20px; right: 24px; display: flex; align-items: center; gap: 8px; font-size: 20px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.seeds svg { width: 22px; height: 22px; }
+#hNote {
+  position: absolute; left: 50%; top: 22px; transform: translate(-50%, -8px); padding: 9px 18px; border-radius: 999px;
+  background: rgba(10, 24, 38, 0.5); border: 1px solid var(--line); font-size: 15px; opacity: 0; transition: opacity 0.35s, transform 0.35s; white-space: nowrap;
+}
+#hNote.on { opacity: 1; transform: translate(-50%, 0); }
+#hFps { position: fixed; right: 12px; bottom: 10px; font-size: 12px; color: rgba(255, 255, 255, 0.7); text-shadow: 0 1px 4px rgba(0, 0, 0, 0.5); font-variant-numeric: tabular-nums; pointer-events: none; }
+
+/* ── panels ── */
+#pause, #settings { display: grid; place-items: center; }
+#settings { z-index: 5; background: rgba(6, 16, 26, 0.25); padding: 16px; box-sizing: border-box; }
+/* the settings list is taller than short windows: it scrolls, with the title and Done pinned */
+#settings .panel { max-height: calc(100vh - 32px); max-height: calc(100dvh - 32px); overflow-y: auto; overscroll-behavior: contain; padding-bottom: 0; }
+#settings .panel-head { display: flex; align-items: center; justify-content: space-between; }
+#settings .close { width: 36px; height: 36px; border-radius: 50%; border: 1px solid rgba(255, 255, 255, 0.3); background: transparent; color: inherit; font-size: 20px; line-height: 1; cursor: pointer; }
+#settings .close:hover { background: rgba(255, 255, 255, 0.12); }
+#settings .panel-foot { position: sticky; bottom: 0; margin: 0 -26px; padding: 12px 26px 22px; background: linear-gradient(rgba(12, 26, 40, 0), rgba(12, 26, 40, 0.96) 35%); }
+.panel {
+  width: min(420px, 100%); box-sizing: border-box; padding: 26px; border-radius: 20px;
+  background: rgba(12, 26, 40, 0.8); border: 1px solid var(--line); box-shadow: 0 24px 60px rgba(0, 10, 20, 0.45);
+  -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px);
+  display: flex; flex-direction: column; gap: 14px;
+}
+.panel h2 { margin: 0 0 4px; font-family: var(--display); font-weight: 800; font-size: 34px; }
+.panel .primary, .panel .ghost { width: 100%; }
+.set { display: flex; align-items: center; justify-content: space-between; gap: 16px; font-size: 15px; }
+.set label, .set > span { color: var(--muted); }
+.set input[type=range] { width: 170px; accent-color: var(--seed); }
+.tog, .seg button {
+  border: 1px solid rgba(255, 255, 255, 0.3); background: transparent; border-radius: 999px; padding: 6px 13px; font-size: 14px; font-weight: 500;
+}
+.tog[aria-pressed="true"], .seg button[aria-pressed="true"] { background: var(--cream); color: var(--ink); border-color: var(--cream); }
+.seg { display: flex; gap: 4px; flex-wrap: wrap; justify-content: flex-end; }
+.set select {
+  font: inherit; font-size: 14px; color: var(--text); background: rgba(255, 255, 255, 0.06); border: 1px solid rgba(255, 255, 255, 0.3);
+  border-radius: 999px; padding: 6px 12px; max-width: 170px;
+}
+.set select option { background: var(--ink-2); color: var(--text); }
+.hint b { color: #fff; font-weight: 700; }
+.hint { margin: 0; font-size: 13px; color: var(--muted); line-height: 1.5; }
+#nogl { position: fixed; inset: 0; display: grid; place-items: center; padding: 16px; text-align: center; font-size: 18px; }
+
+@media (max-width: 640px) {
+  .controls { grid-template-columns: 1fr; }
+  .lede { font-size: 16px; }
+  .gauges { gap: 18px; }
+}
+@media (max-height: 640px) { .lede, .controls { display: none; } }
+@media (prefers-reduced-motion: reduce) { .primary, #hNote { transition: none; } }
+</style>
+
+<canvas id="view" aria-label="Windborne flight view"></canvas>
+<div id="veil"></div>
+
+<section id="title" class="screen">
+  <div class="scrim"></div>
+  <div class="brand">
+    <p class="kicker">A glider · a valley · the wind</p>
+    <h1>Windborne</h1>
+    <p class="lede">Lean with your mouse to bank and carve. Dive to gather speed, pull up to trade it for height, and circle in the rising air beneath the clouds to climb.</p>
+    <div class="actions">
+      <button class="primary" id="fly" type="button">Take flight</button>
+      <button class="ghost" id="btnSettings" type="button">Settings</button>
+    </div>
+    <ul class="controls">
+      <li><svg class="mouse" viewBox="0 0 22 32" aria-hidden="true"><rect class="body" x="3" y="3" width="16" height="26" rx="8"/><path class="ln" d="M11 3v9M3 12h16"/><path class="ln" d="M0.5 16h2M19.5 16h2M11 0.5v1"/></svg><span><b>Move</b>lean and pitch</span></li>
+      <li><svg class="mouse" viewBox="0 0 22 32" aria-hidden="true"><rect class="body" x="3" y="3" width="16" height="26" rx="8"/><path class="hl" d="M11 3.7v8.3H3.7v-1A7.3 7.3 0 0 1 11 3.7z"/><path class="ln" d="M11 3v9M3 12h16"/></svg><span><b>Hold left</b>jet boost</span></li>
+      <li><svg class="mouse" viewBox="0 0 22 32" aria-hidden="true"><rect class="body" x="3" y="3" width="16" height="26" rx="8"/><path class="hl" d="M11 3.7v8.3h7.3v-1A7.3 7.3 0 0 0 11 3.7z"/><path class="ln" d="M11 3v9M3 12h16"/></svg><span><b>Hold right</b>look around</span></li>
+      <li><svg class="mouse" viewBox="0 0 22 32" aria-hidden="true"><rect class="body" x="3" y="3" width="16" height="26" rx="8"/><path class="ln" d="M3 12h16"/><rect class="hl" x="9.5" y="5" width="3" height="6" rx="1.5"/></svg><span><b>Scroll</b>first person or chase view</span></li>
+    </ul>
+    <p class="meta">Most seeds gathered in one flight: <b id="bestSeeds">0</b> · Esc pauses</p>
+  </div>
+</section>
+
+<section id="hud" hidden>
+  <div id="stickRing"><div id="stickDot"></div></div>
+  <div class="seeds"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4" fill="#f1b64a"/><path d="M12 1v6M12 17v6M1 12h6M17 12h6" stroke="#fff1c8" stroke-width="1.6" stroke-linecap="round"/></svg><span id="hSeeds">0</span></div>
+  <div class="gauges">
+    <div class="gauge"><span class="v" id="hSpd">0</span><span class="u" id="hSpdU">KM/H</span></div>
+    <div class="gauge"><span class="v" id="hAlt">0</span><span class="u">M ALT</span></div>
+    <div class="gauge"><span id="hVsArrow" data-dir="level"></span><span class="v" id="hVs">0.0</span><span class="u">M/S</span></div>
+  </div>
+  <div class="breath" title="Jet"><div id="hBreath"></div></div>
+  <div id="hNote"></div>
+</section>
+<div id="hFps"></div>
+
+<section id="pause" class="screen" hidden>
+  <div class="panel">
+    <h2>Paused</h2>
+    <p class="hint">Now playing: <b id="nowPlaying">…</b></p>
+    <button class="primary" id="btnResume" type="button">Resume flight</button>
+    <button class="ghost" id="btnSkip2" type="button">Next track</button>
+    <button class="ghost" id="btnSettings2" type="button">Settings</button>
+    <button class="ghost" id="btnTitle" type="button">Back to title</button>
+  </div>
+</section>
+
+<section id="settings" class="screen" hidden>
+  <div class="panel" role="dialog" aria-label="Settings">
+    <div class="panel-head"><h2>Settings</h2><button class="close" id="btnClose" type="button" aria-label="Close settings">×</button></div>
+    <div class="set"><label for="setSens">Mouse sensitivity</label><input type="range" id="setSens" min="0.3" max="2.5" step="0.05"></div>
+    <div class="set"><span>Physics</span><div class="seg"><button type="button" data-phys="relaxed">Relaxed</button><button type="button" data-phys="realistic">Realistic</button></div></div>
+    <div class="set"><span>Flight assists</span><button class="tog" id="setAssist" type="button">On</button></div>
+    <p class="hint">Realistic simulates the whole wing: stalls, spins and wing drops happen, landings must be gentle, and thermals lean with the wind. With assists off, the mouse moves the control surfaces directly and nothing levels the wings for you.</p>
+    <div class="set"><span>Invert pitch</span><button class="tog" id="setInvert" type="button">Off</button></div>
+    <div class="set"><label for="setFov">Field of view</label><input type="range" id="setFov" min="58" max="96" step="1"></div>
+    <div class="set"><span>Speed units</span><div class="seg"><button type="button" data-units="kmh">km/h</button><button type="button" data-units="mph">mph</button><button type="button" data-units="kts">knots</button></div></div>
+    <div class="set"><span>Time of day</span><div class="seg"><button type="button" data-tod="morning">Morning</button><button type="button" data-tod="afternoon">Afternoon</button><button type="button" data-tod="dusk">Dusk</button></div></div>
+    <div class="set"><span>Quality</span><div class="seg"><button type="button" data-q="low">Low</button><button type="button" data-q="medium">Medium</button><button type="button" data-q="high">High</button></div></div>
+    <div class="set"><span>Resolution</span><div class="seg"><button type="button" data-res="auto">Auto</button><button type="button" data-res="1">100%</button><button type="button" data-res="0.75">75%</button><button type="button" data-res="0.5">50%</button></div></div>
+    <p class="hint" id="qualHint">High adds volumetric clouds at full detail, sharper soft shadows and 4× antialiasing. Medium keeps volumetric clouds and shadows at lower cost. Low swaps in billboard clouds. Auto resolution trades sharpness for smoothness to hold your display's refresh rate.</p>
+    <div class="set"><label for="setVol">Volume</label><input type="range" id="setVol" min="0" max="100" step="1"></div>
+    <div class="set"><span>Music</span><button class="tog" id="setMusic" type="button">On</button></div>
+    <div class="set"><label for="setTrack">Soundtrack</label><div class="seg"><select id="setTrack"></select><button type="button" class="tog" id="btnSkip" title="Next track (N)">Skip</button></div></div>
+    <div class="set"><span>Climb beeps</span><button class="tog" id="setVario" type="button">On</button></div>
+    <div class="set"><span>FPS counter</span><button class="tog" id="setFps" type="button">On</button></div>
+    <div class="panel-foot"><button class="primary" id="btnDone" type="button">Done</button></div>
+  </div>
+</section>
+<div id="nogl" hidden>Windborne needs WebGL2. Try a current Chrome, Edge, Firefox or Safari.</div>
+<!--SCRIPTS-->

@@ -1,0 +1,700 @@
+'use strict';
+// ───────────────────────── Core: math, shared noise/terrain (JS + GLSL twins), GL helpers ─────────────────────────
+const clamp = (x, a, b) => (x < a ? a : x > b ? b : x);
+const lerp = (a, b, t) => a + (b - a) * t;
+const ss = (a, b, x) => { let t = (x - a) / (b - a); t = t < 0 ? 0 : t > 1 ? 1 : t; return t * t * (3 - 2 * t); };
+
+// ── noise (bit-identical hash on CPU and GPU) ──
+function hash2(x, z) {
+  let h = (Math.imul(x, 374761393) + Math.imul(z, 668265263)) | 0;
+  h = Math.imul(h ^ (h >>> 13), 1274126177);
+  h ^= h >>> 16;
+  return (h & 0xffffff) / 16777216;
+}
+function vn(x, z) {
+  const ix = Math.floor(x), iz = Math.floor(z);
+  const fx = x - ix, fz = z - iz;
+  const ux = fx * fx * fx * (fx * (fx * 6 - 15) + 10), uz = fz * fz * fz * (fz * (fz * 6 - 15) + 10);
+  const a = hash2(ix, iz), b = hash2(ix + 1, iz), c = hash2(ix, iz + 1), d = hash2(ix + 1, iz + 1);
+  return a + (b - a) * ux + (c - a) * uz + (a - b - c + d) * ux * uz;
+}
+
+// value noise with derivatives → [v, dv/dx, dv/dz] in a shared scratch array
+const VND = [0, 0, 0];
+function vnd(x, z) {
+  const ix = Math.floor(x), iz = Math.floor(z);
+  const fx = x - ix, fz = z - iz;
+  const ux = fx * fx * fx * (fx * (fx * 6 - 15) + 10), uz = fz * fz * fz * (fz * (fz * 6 - 15) + 10);
+  const dux = 30 * fx * fx * (fx * (fx - 2) + 1), duz = 30 * fz * fz * (fz * (fz - 2) + 1);
+  const a = hash2(ix, iz), b = hash2(ix + 1, iz), c = hash2(ix, iz + 1), d = hash2(ix + 1, iz + 1);
+  const k1 = b - a, k2 = c - a, k4 = a - b - c + d;
+  VND[0] = a + k1 * ux + k2 * uz + k4 * ux * uz;
+  VND[1] = dux * (k1 + k4 * uz); VND[2] = duz * (k2 + k4 * ux);
+  return VND;
+}
+// Terrain height (m). Landforms: a continent with seas and lakes; rolling lowland hills; eroded mountain ranges
+// (ridged noise whose finer octaves are damped where the slope is already steep, so faces stay clean and detail gathers
+// in the gullies) stretched so their ridgelines tend to run across the wind, so windward faces give ridge lift; river
+// valleys; canyon country (a raised plateau cut by deep meandering gorges with stepped walls, the bigger ones flooded);
+// mesas. det: 1 = full detail (CPU); lower values drop the finest octaves (the GPU filters by distance instead).
+const TERRAIN_WU = [0.9119, 0.4104]; // = normalize(WORLD.WIND.xz)
+function terrainHProc(x, z, det) {
+  const minWave = det >= 1 ? 0 : 300 * (1 - det);
+  const wx = vn(x * 0.00035 + 3.1, z * 0.00035 + 1.7) - 0.5, wz = vn(x * 0.00035 + 8.3, z * 0.00035 + 4.9) - 0.5;
+  const px = x + wx * 1100, pz = z + wz * 1100;
+  const c = (0.5 * vn(px * 0.00015 + 0.5, pz * 0.00015 + 0.5) + 0.25 * vn(px * 0.0003 + 2.1, pz * 0.0003 + 7.3)
+    + 0.125 * vn(px * 0.0006 + 4.4, pz * 0.0006 + 1.9)) / 0.875;
+  const land = ss(0.3, 0.5, c), high = ss(0.46, 0.74, c);
+  const rA = vn(px * 0.00009 + 13.1, pz * 0.00009 + 4.2), rB = vn(px * 0.00011 + 2.9, pz * 0.00011 + 17.7);
+  const canyonR = ss(0.6, 0.7, rA) * land * (1 - high);
+  const mesaR = ss(0.62, 0.72, rB) * land * (1 - high) * (1 - canyonR);
+  let hl = 0, amp = 0.5, f = 1 / 1100;
+  for (let i = 0; i < 4; i++) { hl += amp * vn(px * f + 11.5, pz * f + 2.2); f *= 2.07; amp *= 0.5; }
+  hl /= 0.9375;
+  let mtn = 0;
+  if (high > 0.001) {
+    const u = px * TERRAIN_WU[0] + pz * TERRAIN_WU[1], v = -px * TERRAIN_WU[1] + pz * TERRAIN_WU[0];
+    let qx = u / 3750 + 5.3, qz = v / 6750 + 9.1, a = 0, b = 1, dx = 0, dz = 0, wave = 3750, cr = 0;
+    for (let i = 0; i < 7; i++) {
+      const w = ss(minWave, minWave * 2 + 1e-3, wave);
+      if (w <= 0) break;
+      const n = vnd(qx, qz);
+      const e = i < 3 ? 0.004 : 0.1, s = n[0] * 2 - 1, sa = Math.sqrt(s * s + e), r = 1 - sa + Math.sqrt(e);
+      const sg = -2 * s / Math.max(sa, 1e-4);
+      dx += sg * n[1] * r; dz += sg * n[2] * r;
+      a += w * (i < 3 ? 1 : 1 - 0.7 * cr) * b * r * r / (1 + (dx * dx + dz * dz) * 0.14); // fine detail stays off the main crests: arêtes, not saws
+      if (i < 2) cr = Math.max(cr, ss(0.82, 1, r));
+      b *= 0.48; wave *= 0.5;
+      const nx = qx * 1.6 - qz * 1.2, nz = qx * 1.2 + qz * 1.6;
+      qx = nx + 1.7; qz = nz + 8.3;
+    }
+    mtn = Math.pow(a / 1.35, 1.7);
+  }
+  let h = -55 + land * 80 + land * hl * 150 + high * (mtn * 1250 + hl * 120);
+  const vly = Math.abs(vn(px * 0.00036 + 1.9, pz * 0.00036 + 6.4) - 0.5);
+  const valley = 1 - ss(0, 0.13 + 0.03 * (1 - high), vly);
+  h -= valley * valley * (30 * land + 380 * high);
+  if (canyonR > 0.001) {
+    const cw = vn(px * 0.0009 + 2.2, pz * 0.0009 + 7.7) - 0.5;
+    const path = Math.abs(vn(px * 0.00032 + cw * 0.5 + 4.6, pz * 0.00032 - cw * 0.4 + 1.2) - 0.5);
+    const wall = 1 - ss(0.013, 0.036, path);
+    const w4 = wall * 4, steps = (Math.floor(w4) + ss(0.72, 1, w4 - Math.floor(w4))) / 4;
+    const plateau = h + 150;
+    h = h + canyonR * (plateau - h) - canyonR * steps * (plateau + 12);
+  }
+  if (mesaR > 0.001) {
+    const m = vn(px * 0.0014 + 9.4, pz * 0.0014 + 5.5);
+    h += mesaR * (95 * ss(0.54, 0.58, m) + 55 * ss(0.66, 0.7, m));
+  }
+  let d = 0; amp = 0.5; f = 1 / 160; let w2 = 160;
+  for (let i = 0; i < 3; i++) { d += ss(minWave, minWave * 2 + 1e-3, w2) * amp * (vn(px * f + 3.3, pz * f + 7.1) - 0.5); f *= 2.1; amp *= 0.5; w2 /= 2.1; }
+  h += d * 24 * (0.35 + land) * (1 + high);
+  return h;
+}
+// terrainH()'s mountain-range factor: 0 in the lowlands, 1 in the heart of a range; varies over kilometres
+function terrainHighProc(x, z) {
+  const px = x + (vn(x * 0.00035 + 3.1, z * 0.00035 + 1.7) - 0.5) * 1100, pz = z + (vn(x * 0.00035 + 8.3, z * 0.00035 + 4.9) - 0.5) * 1100;
+  const c = (0.5 * vn(px * 0.00015 + 0.5, pz * 0.00015 + 0.5) + 0.25 * vn(px * 0.0003 + 2.1, pz * 0.0003 + 7.3)
+    + 0.125 * vn(px * 0.0006 + 4.4, pz * 0.0006 + 1.9)) / 0.875;
+  return ss(0.46, 0.74, c);
+}
+function forestMask(x, z) {
+  return ss(0.54, 0.66, vn(x * 0.0021 + 7.7, z * 0.0021 + 3.3) * 0.7 + vn(x * 0.009 + 1.1, z * 0.009 + 9.9) * 0.3);
+}
+// ── the island: a baked heightfield (island.bin, decoded by boot.js into window.ISLAND_DATA) ──
+// Heights between samples are Catmull-Rom bicubic (smooth, and it keeps the ridgelines), plus a little micro-relief
+// below the grid's resolution — the same function as the GLSL terrainH(), so the ground you collide with is the ground
+// you see. Without island data (the model viewer, or a failed load) the old procedural world stands in.
+const ISLAND = (() => {
+  const D = typeof window !== 'undefined' && window.ISLAND_DATA;
+  if (!D) return null;
+  const { n, dx, origin, h, size } = D;
+  // a smoothed copy (1 km cells, blurred to ~3 km) for regional questions: how mountainous is it around here?
+  const m = 64, b = n / m, sm = new Float32Array(m * m);
+  for (let j = 0; j < m; j++) for (let i = 0; i < m; i++) {
+    let s = 0;
+    for (let y = j * b; y < (j + 1) * b; y += 4) for (let x = i * b; x < (i + 1) * b; x += 4) s += Math.max(h[y * n + x], 0);
+    sm[j * m + i] = s / ((b / 4) * (b / 4));
+  }
+  for (let pass = 0; pass < 3; pass++) {
+    const t = sm.slice();
+    for (let j = 0; j < m; j++) for (let i = 0; i < m; i++) {
+      let s = 0, w = 0;
+      for (let dj = -1; dj <= 1; dj++) for (let di = -1; di <= 1; di++) {
+        const jj = j + dj, ii = i + di;
+        if (jj < 0 || ii < 0 || jj >= m || ii >= m) continue;
+        const k = (di ? 1 : 2) * (dj ? 1 : 2); s += t[jj * m + ii] * k; w += k;
+      }
+      sm[j * m + i] = s / w;
+    }
+  }
+  return { n, dx, inv: 1 / dx, origin, size, h, sm, m, cs: size / m };
+})();
+const _cr = (p0, p1, p2, p3, t) => p1 + 0.5 * t * (p2 - p0 + t * (2 * p0 - 5 * p1 + 4 * p2 - p3 + t * (3 * (p1 - p2) + p3 - p0)));
+function islandH(x, z) {
+  const I = ISLAND, n = I.n, h = I.h;
+  const u = (x - I.origin) * I.inv - 0.5, v = (z - I.origin) * I.inv - 0.5;
+  const iu = Math.floor(u), iv = Math.floor(v), fu = u - iu, fv = v - iv;
+  const r = [0, 0, 0, 0];
+  for (let k = 0; k < 4; k++) {
+    const y = Math.min(Math.max(iv - 1 + k, 0), n - 1) * n;
+    const x0 = Math.min(Math.max(iu - 1, 0), n - 1), x1 = Math.min(Math.max(iu, 0), n - 1);
+    const x2 = Math.min(Math.max(iu + 1, 0), n - 1), x3 = Math.min(Math.max(iu + 2, 0), n - 1);
+    r[k] = _cr(h[y + x0], h[y + x1], h[y + x2], h[y + x3], fu);
+  }
+  return _cr(r[0], r[1], r[2], r[3], fv);
+}
+function microH(x, z) {
+  return (vn(x / 9.1 + 3.7, z / 9.1 + 1.3) - 0.5) * 1.1 + (vn(x / 3.3 + 7.1, z / 3.3 + 2.9) - 0.5) * 0.45;
+}
+function terrainH(x, z, det) {
+  if (!ISLAND) return terrainHProc(x, z, det);
+  const h = islandH(x, z);
+  return det >= 1 ? h + microH(x, z) * ss(0.5, 3.0, h) : h;
+}
+// how mountainous the country around (x, z) is, 0 lowland … 1 high mountains (smooth over kilometres)
+function terrainHigh(x, z) {
+  if (!ISLAND) return terrainHighProc(x, z);
+  const I = ISLAND, m = I.m;
+  const u = Math.min(Math.max((x - I.origin) / I.cs - 0.5, 0), m - 1.001), v = Math.min(Math.max((z - I.origin) / I.cs - 0.5, 0), m - 1.001);
+  const i = Math.floor(u), j = Math.floor(v), fu = u - i, fv = v - j, sm = I.sm;
+  const a = sm[j * m + i], b = sm[j * m + i + 1], c = sm[(j + 1) * m + i], d = sm[(j + 1) * m + i + 1];
+  const hs = (a * (1 - fu) + b * fu) * (1 - fv) + (c * (1 - fu) + d * fu) * fv;
+  return Math.min(Math.max(hs / 1400, 0), 1);
+}
+const groundH = (x, z) => Math.max(terrainH(x, z, 1), 0);
+function terrainN(x, z, out) {
+  const e = 1.5, h = terrainH(x, z, 1);
+  const nx = h - terrainH(x + e, z, 1), nz = h - terrainH(x, z + e, 1);
+  const l = Math.hypot(nx, e, nz);
+  out[0] = nx / l; out[1] = e / l; out[2] = nz / l;
+  return out;
+}
+
+// aerial-perspective froxel volume (shared by ATMOS and the GLSL below)
+const ATMOS_AP_SLICES = 32, ATMOS_AP_RANGE_M = 40000;
+const GLSL_COMMON = `
+float hash2(ivec2 p){
+  uint h = uint(p.x)*374761393u + uint(p.y)*668265263u;
+  h = (h ^ (h >> 13u)) * 1274126177u; h = h ^ (h >> 16u);
+  return float(h & 16777215u) / 16777216.0;
+}
+float vn(vec2 p){
+  vec2 i = floor(p), f = p - i;
+  vec2 u = f*f*f*(f*(f*6.0-15.0)+10.0);
+  ivec2 ii = ivec2(i);
+  float a = hash2(ii), b = hash2(ii+ivec2(1,0)), c = hash2(ii+ivec2(0,1)), d = hash2(ii+ivec2(1,1));
+  return a + (b-a)*u.x + (c-a)*u.y + (a-b-c+d)*u.x*u.y;
+}
+vec3 vnd(vec2 p){
+  vec2 i = floor(p), f = p - i;
+  vec2 u = f*f*f*(f*(f*6.0 - 15.0) + 10.0), du = 30.0*f*f*(f*(f - 2.0) + 1.0);
+  ivec2 ii = ivec2(i);
+  float a = hash2(ii), b = hash2(ii + ivec2(1, 0)), c = hash2(ii + ivec2(0, 1)), d = hash2(ii + ivec2(1, 1));
+  float k1 = b - a, k2 = c - a, k4 = a - b - c + d;
+  return vec3(a + k1*u.x + k2*u.y + k4*u.x*u.y, du*vec2(k1 + k4*u.y, k2 + k4*u.x));
+}
+// the old procedural terrain (JS twin terrainHProc); minWave (m) fades out octaves shorter than it
+float terrainHProc(vec2 q, float minWave){
+  float wx = vn(q*0.00035 + vec2(3.1,1.7)) - 0.5;
+  float wz = vn(q*0.00035 + vec2(8.3,4.9)) - 0.5;
+  vec2 p = q + vec2(wx, wz)*1100.0;
+  float c = (0.5*vn(p*0.00015+vec2(0.5)) + 0.25*vn(p*0.0003+vec2(2.1,7.3)) + 0.125*vn(p*0.0006+vec2(4.4,1.9))) / 0.875;
+  float land = smoothstep(0.3, 0.5, c), high = smoothstep(0.46, 0.74, c);
+  float rA = vn(p*0.00009 + vec2(13.1, 4.2)), rB = vn(p*0.00011 + vec2(2.9, 17.7));
+  float canyonR = smoothstep(0.6, 0.7, rA)*land*(1.0 - high);
+  float mesaR = smoothstep(0.62, 0.72, rB)*land*(1.0 - high)*(1.0 - canyonR);
+  float hl = 0.0, amp = 0.5, f = 1.0/1100.0;
+  for (int i=0;i<4;i++){ hl += amp*vn(p*f + vec2(11.5,2.2)); f *= 2.07; amp *= 0.5; }
+  hl /= 0.9375;
+  float mtn = 0.0;
+  if (high > 0.001) {
+    const vec2 WU = vec2(0.9119, 0.4104);
+    vec2 uv = vec2(dot(p, WU), dot(p, vec2(-WU.y, WU.x)));
+    vec2 qq = uv/vec2(3750.0, 6750.0) + vec2(5.3, 9.1);
+    float a = 0.0, b = 1.0, wave = 3750.0, cr = 0.0; vec2 dd = vec2(0.0);
+    for (int i = 0; i < 7; i++){
+      float w = smoothstep(minWave, minWave*2.0 + 1e-3, wave);
+      if (w <= 0.0) break;
+      vec3 n = vnd(qq);
+      float e = i < 3 ? 0.004 : 0.1, s = n.x*2.0 - 1.0, sa = sqrt(s*s + e), r = 1.0 - sa + sqrt(e);
+      float sg = -2.0*s/max(sa, 1e-4);
+      dd += sg*n.yz*r;
+      a += w*(i < 3 ? 1.0 : 1.0 - 0.7*cr)*b*r*r/(1.0 + dot(dd, dd)*0.14);
+      if (i < 2) cr = max(cr, smoothstep(0.82, 1.0, r));
+      b *= 0.48; wave *= 0.5;
+      qq = vec2(qq.x*1.6 - qq.y*1.2, qq.x*1.2 + qq.y*1.6) + vec2(1.7, 8.3);
+    }
+    mtn = pow(a/1.35, 1.7);
+  }
+  float h = -55.0 + land*80.0 + land*hl*150.0 + high*(mtn*1250.0 + hl*120.0);
+  float vly = abs(vn(p*0.00036 + vec2(1.9,6.4)) - 0.5);
+  float valley = 1.0 - smoothstep(0.0, 0.13 + 0.03*(1.0 - high), vly);
+  h -= valley*valley*(30.0*land + 380.0*high);
+  if (canyonR > 0.001) {
+    float cw = vn(p*0.0009 + vec2(2.2, 7.7)) - 0.5;
+    float path = abs(vn(p*0.00032 + vec2(cw*0.5 + 4.6, -cw*0.4 + 1.2)) - 0.5);
+    float wall = 1.0 - smoothstep(0.013, 0.036, path);
+    float w4 = wall*4.0, steps = (floor(w4) + smoothstep(0.72, 1.0, w4 - floor(w4)))/4.0;
+    float plateau = h + 150.0;
+    h = h + canyonR*(plateau - h) - canyonR*steps*(plateau + 12.0);
+  }
+  if (mesaR > 0.001) {
+    float m = vn(p*0.0014 + vec2(9.4, 5.5));
+    h += mesaR*(95.0*smoothstep(0.54, 0.58, m) + 55.0*smoothstep(0.66, 0.7, m));
+  }
+  float d = 0.0, w2 = 160.0; amp = 0.5; f = 1.0/160.0;
+  for (int i=0;i<3;i++){ d += smoothstep(minWave, minWave*2.0 + 1e-3, w2)*amp*(vn(p*f + vec2(3.3,7.1)) - 0.5); f *= 2.1; amp *= 0.5; w2 /= 2.1; }
+  h += d*24.0*(0.35 + land)*(1.0 + high);
+  return h;
+}
+float forestMask(vec2 p){
+  return smoothstep(0.54, 0.66, vn(p*0.0021 + vec2(7.7,3.3))*0.7 + vn(p*0.009 + vec2(1.1,9.9))*0.3);
+}
+// ── the island heightfield (JS twin: terrainH/islandH/microH in core.js). uHeightP: origin (m), 1/cell (1/m), cells,
+// enabled. Fine detail: Catmull-Rom bicubic over 16 texels; coarser (minWave, m): the float mip chain ──
+uniform highp sampler2D uHeight; uniform vec4 uHeightP;
+float hmF(ivec2 i){ int m = int(uHeightP.z) - 1; return texelFetch(uHeight, clamp(i, ivec2(0), ivec2(m)), 0).r; }
+float crs(float p0, float p1, float p2, float p3, float t){ return p1 + 0.5*t*(p2 - p0 + t*(2.0*p0 - 5.0*p1 + 4.0*p2 - p3 + t*(3.0*(p1 - p2) + p3 - p0))); }
+float hmCubic(vec2 q){
+  vec2 u = (q - uHeightP.x)*uHeightP.y - 0.5, fi = floor(u), f = u - fi;
+  ivec2 b = ivec2(fi);
+  float r0 = crs(hmF(b + ivec2(-1, -1)), hmF(b + ivec2(0, -1)), hmF(b + ivec2(1, -1)), hmF(b + ivec2(2, -1)), f.x);
+  float r1 = crs(hmF(b + ivec2(-1, 0)), hmF(b + ivec2(0, 0)), hmF(b + ivec2(1, 0)), hmF(b + ivec2(2, 0)), f.x);
+  float r2 = crs(hmF(b + ivec2(-1, 1)), hmF(b + ivec2(0, 1)), hmF(b + ivec2(1, 1)), hmF(b + ivec2(2, 1)), f.x);
+  float r3 = crs(hmF(b + ivec2(-1, 2)), hmF(b + ivec2(0, 2)), hmF(b + ivec2(1, 2)), hmF(b + ivec2(2, 2)), f.x);
+  return crs(r0, r1, r2, r3, f.y);
+}
+// the island's data maps: (river flow, sediment, scree, bare rock) and region weights (Nordic, Mediterranean, plateau,
+// volcano; the Alpine centre is what's left)
+uniform sampler2D uIslMaps, uIslReg;
+vec4 islandMaps(vec2 q){ return textureLod(uIslMaps, (q - uHeightP.x)*uHeightP.y/uHeightP.z, 0.0); }
+vec4 islandRegions(vec2 q){ return textureLod(uIslReg, (q - uHeightP.x)*uHeightP.y/uHeightP.z, 0.0); }
+float microH(vec2 q){ return (vn(q/9.1 + vec2(3.7, 1.3)) - 0.5)*1.1 + (vn(q/3.3 + vec2(7.1, 2.9)) - 0.5)*0.45; }
+float terrainH(vec2 q, float minWave){
+  if (uHeightP.w < 0.5) return terrainHProc(q, minWave);
+  float texel = 1.0/uHeightP.y, h;
+  if (minWave <= texel*1.5) h = hmCubic(q);
+  else h = textureLod(uHeight, (q - uHeightP.x)*uHeightP.y/uHeightP.z, log2(minWave/(texel*1.5))).r;
+  return h + microH(q)*smoothstep(0.5, 3.0, h)*(1.0 - smoothstep(4.0, 12.0, minWave));
+}
+// Lighting is scene-linear HDR. Colours authored in the code are sRGB and go through toLin() before lighting.
+// uSunCol = sun irradiance/π at the camera, uAmb = sky irradiance/π on an up-facing surface,
+// uZen / uHor = sky radiance at the zenith / mean horizon; all from the atmosphere model (ATMOS).
+uniform vec3 uSun, uSunCol, uZen, uHor, uAmb, uCam;
+uniform float uFog, uTime;
+uniform sampler2D uSkyLut; uniform mediump sampler3D uApLut;
+uniform vec4 uAtm; // (1/width, 1/height, aerial-perspective distance scale, camera altitude km)
+vec3 toLin(vec3 c){ return pow(max(c, vec3(0.0)), vec3(2.2)); }
+// sky-view LUT (sun at azimuth 0, horizon-concentrated latitude mapping, Hillaire 2020)
+vec3 skyCol(vec3 d){
+  const float PI_ = 3.14159265, Rg_ = 6360.0;
+  float r = Rg_ + uAtm.w;
+  float vH = sqrt(max(r*r - Rg_*Rg_, 0.0)), beta = acos(clamp(vH/r, -1.0, 1.0)), zh = PI_ - beta;
+  float zen = acos(clamp(d.y, -1.0, 1.0)), v;
+  if (zen < zh) { float c = zen/zh; v = 0.5*(1.0 - sqrt(max(1.0 - c, 0.0))); }
+  else { float c = (zen - zh)/beta; v = 0.5 + 0.5*sqrt(max(c, 0.0)); }
+  vec2 sh = normalize(uSun.xz + vec2(1e-5, 0.0));
+  float az = atan(d.z, d.x) - atan(sh.y, sh.x);
+  return texture(uSkyLut, vec2(fract(az/(2.0*PI_) + 0.5), clamp(v, 0.004, 0.996))).rgb;
+}
+#ifdef FRAG
+// aerial perspective from the froxel volume: in-scattered light added, transmittance multiplied
+vec4 aerial(float distM){
+  float s = sqrt(clamp(distM*uAtm.z*(1.0/${ATMOS_AP_RANGE_M}.0), 0.0, 1.0));
+  vec4 a = texture(uApLut, vec3(gl_FragCoord.xy*uAtm.xy, s));
+  float w = clamp(s*${ATMOS_AP_SLICES}.0, 0.0, 1.0);
+  return vec4(a.rgb*w, mix(1.0, a.a, w));
+}
+vec3 fogIt(vec3 col, vec3 rel){ vec4 a = aerial(length(rel)); return col*a.a + a.rgb; }
+// ── cloud shadows: the clouds' weather map (CLOUDS), looked up where the sun ray meets the cloud ──
+uniform sampler2D uCloudMap; uniform vec4 uMapP; // map origin x, z, 1/size, enabled
+float cloudShadow(vec3 rel){
+  if (uMapP.w < 0.5 || uSun.y < 0.02) return 1.0;
+  vec3 p = rel + uCam;
+  float h = 1250.0;
+  for (int k = 0; k < 2; k++) { // project to a typical cloud height, then to the height of the cloud found there
+    vec3 q = p + uSun*max(h - p.y, 0.0)/uSun.y;
+    vec2 uv = (q.xz - uMapP.xy)*uMapP.z;
+    if (uv.x < 0.0 || uv.y < 0.0 || uv.x > 1.0 || uv.y > 1.0) return 1.0;
+    vec4 m = textureLod(uCloudMap, uv, 0.0);
+    if (m.r < 0.01) return 1.0;
+    float top = m.g*8000.0, base = (1.0 - m.b)*8000.0;
+    base = mix(base, m.a*8000.0, smoothstep(120.0, 300.0, m.a*8000.0 - base)); // no pillars under high clouds (as the clouds do)
+    if (k == 1) return exp(-m.r*max(top - base, 0.0)*0.011);
+    h = 0.5*(top + base);
+  }
+  return 1.0;
+}
+// ── sun shadows (SHADOW): cascaded maps in a depth array, hardware-filtered comparisons ──
+uniform mediump sampler2DArrayShadow uShadowMap;
+uniform mat4 uCasM[5]; uniform vec4 uCasP[5]; // matrix (camera-relative at render), (camera moved since, texel m)
+uniform vec4 uShadowP; // (cascades, pcf taps, enabled, -)
+float gShadow = 1.0;   // set by a fragment shader before lightMesh(): sun visibility at this pixel
+float shadowTaps(int i, vec3 sc){
+  float t = 1.0/float(textureSize(uShadowMap, 0).x);
+  if (uShadowP.y < 2.0) return texture(uShadowMap, vec4(sc.xy, float(i), sc.z));
+  if (uShadowP.y < 5.0) { // 4 bilinear taps: a smooth 3×3-texel footprint
+    return 0.25*(texture(uShadowMap, vec4(sc.xy + vec2(-0.5, -0.5)*t, float(i), sc.z)) + texture(uShadowMap, vec4(sc.xy + vec2(0.5, -0.5)*t, float(i), sc.z))
+               + texture(uShadowMap, vec4(sc.xy + vec2(-0.5, 0.5)*t, float(i), sc.z)) + texture(uShadowMap, vec4(sc.xy + vec2(0.5, 0.5)*t, float(i), sc.z)));
+  }
+  float s = 0.0; // 9 bilinear taps with tent weights: a soft 5×5-texel penumbra
+  for (int y = -1; y <= 1; y++) for (int x = -1; x <= 1; x++) {
+    float w = (2.0 - abs(float(x)))*(2.0 - abs(float(y)));
+    s += w*texture(uShadowMap, vec4(sc.xy + vec2(float(x), float(y))*t*1.2, float(i), sc.z));
+  }
+  return s/16.0;
+}
+// cascade i's shadow coordinate for a camera-relative position, with a normal offset that grows with texel size
+vec3 shadowCoord(int i, vec3 rel, vec3 n, float nl){
+  vec3 p = rel + uCasP[i].xyz + n*uCasP[i].w*(0.8 + 1.6*(1.0 - nl));
+  return (uCasM[i]*vec4(p, 1.0)).xyz*0.5 + 0.5;
+}
+// sun visibility 0..1; casc returns the cascade used (99 = none)
+float sunShadowMap(vec3 rel, vec3 n, out float casc);
+float sunShadowC(vec3 rel, vec3 n, out float casc){ return sunShadowMap(rel, n, casc)*cloudShadow(rel); }
+float sunShadowMap(vec3 rel, vec3 n, out float casc){
+  casc = 99.0;
+  if (uShadowP.z < 0.5 || uShadowP.x < 1.0) return 1.0;
+  float nl = clamp(dot(n, uSun), 0.0, 1.0);
+  int nc = int(uShadowP.x);
+  for (int i = 0; i < 5; i++){
+    if (i >= nc) break;
+    vec3 sc = shadowCoord(i, rel, n, nl);
+    vec2 e = abs(sc.xy - 0.5);
+    float m = max(e.x, e.y);
+    if (m < 0.485 && sc.z < 1.0) {
+      casc = float(i);
+      float s = shadowTaps(i, sc);
+      float b = smoothstep(0.4, 0.485, m); // cross-fade into the next cascade near the edge
+      if (b > 0.0) {
+        float s2 = 1.0;
+        if (i + 1 < nc) { vec3 sc2 = shadowCoord(i + 1, rel, n, nl); s2 = sc2.z < 1.0 ? shadowTaps(i + 1, sc2) : 1.0; }
+        s = mix(s, s2, b);
+      }
+      return s;
+    }
+  }
+  return 1.0;
+}
+float sunShadow(vec3 rel, vec3 n){ float c; return sunShadowC(rel, n, c); }
+#endif
+uniform float uShadowPass; // 1 while rendering shadow maps: fragment shaders return right after their discards
+// ───── wind gusts: one field shared by everything that shows the wind (JS twin: GUST.field) ─────
+// Patches of stronger air travel downwind a little faster than the mean wind (WORLD.WIND = (4.0, 0, 1.8) m/s, fixed
+// here) and churn as they go: slow spells of gusty air and lulls (~900 m), domain-warped gust fronts (~130 m deep,
+// ~210 m wide: they sweep across the land like waves) and smaller cat's-paws riding inside them at their own speed. The direction wobbles slowly (±16°) and veers in gusts.
+const vec2 GUST_DIR = vec2(0.9119, 0.4104);        // normalize(WORLD.WIND.xz)
+const float GUST_SPEED = 4.386, GUST_MEAN = 0.22;  // |WORLD.WIND| (m/s); mean gust strength over the field
+// windGustField(xz, t): the analytic field → (strength 0..1, local wind speed m/s, wind direction xz).
+// ~11 noise lookups: use windGust() / gustMap() below, which read it from the gust map, unless you need it off the map.
+vec4 windGustField(vec2 xz, float t){
+  vec2 q = vec2(dot(xz, GUST_DIR), dot(xz, vec2(-GUST_DIR.y, GUST_DIR.x))); // along / across the wind (m)
+  float spell = vn(vec2((q.x - 4.4*t)*(1.0/900.0) + 3.7, q.y*(1.0/600.0) + 8.1));
+  float af = q.x - 6.2*t;
+  vec2 w = vec2(vn(vec2(af*(1.0/110.0) + 1.3, q.y*(1.0/150.0) + 5.2)), vn(vec2(af*(1.0/110.0) + 7.9, q.y*(1.0/150.0) + 2.4))) - 0.5;
+  vec2 f = vec2(af, q.y) + w*80.0;
+  float front = vn(f*vec2(1.0/130.0, 1.0/210.0) + vec2(9.2, 2.6))*0.68
+              + vn(vec2(f.x*0.8 + f.y*0.6, f.y*0.8 - f.x*0.6)*vec2(1.0/55.0, 1.0/88.0) + vec2(3.1, 6.3))*0.32;
+  float thr = 0.55 - 0.22*spell;
+  float fm = smoothstep(thr, thr + 0.3, front);
+  vec2 pp = vec2(q.x - 8.6*t + w.x*30.0, q.y + 1.3*t + w.y*20.0);
+  float paw = vn(vec2(pp.x*0.87 + pp.y*0.5, pp.y*0.87 - pp.x*0.5)*vec2(1.0/28.0, 1.0/40.0) + vec2(4.4, 0.7))*0.62
+            + vn(vec2(pp.x*0.87 - pp.y*0.5, pp.y*0.87 + pp.x*0.5)*vec2(1.0/12.0, 1.0/18.0) + vec2(1.9, 5.1))*0.38;
+  float g = min(fm*(0.4 + 0.9*paw), 1.0);
+  float veer = (vn(vec2((q.x - 3.0*t)*(1.0/650.0) + 6.6, q.y*(1.0/650.0) + 1.9)) - 0.5)*0.55 + (paw - 0.5)*0.35*g;
+  vec2 d = GUST_DIR*cos(veer) + vec2(-GUST_DIR.y, GUST_DIR.x)*sin(veer);
+  return vec4(g, GUST_SPEED*(0.6 + 0.9*g), d);
+}
+// The gust map: SCENERY renders windGustField around the camera every frame; any program that calls these gets the
+// map's sampler and uniforms from setEnv automatically (vertex or fragment shaders). Off the map: the calm mean.
+uniform sampler2D uGustMap; uniform vec4 uGustP; // map origin x, z, 1/size (1/m), enabled
+// → (bend 0..1, strength 0..1, wind direction xz). bend is the gust as grass and branches feel it: they lean in quickly
+// and spring back more slowly, so a gust leaves a soft wake behind its sharp front.
+vec4 gustMap(vec2 xz){
+  const vec4 calm = vec4(GUST_MEAN, GUST_MEAN, GUST_DIR);
+  if (uGustP.w < 0.5) return calm;
+  vec2 uv = (xz - uGustP.xy)*uGustP.z, e = abs(uv - 0.5);
+  float edge = smoothstep(0.42, 0.5, max(e.x, e.y));
+  return edge >= 1.0 ? calm : mix(textureLod(uGustMap, uv, 0.0), calm, edge);
+}
+// windGust(xz): the wind here, now → .xy local wind direction (unit, xz plane), .z gust strength 0..1 (0 lull, ~0.2 mean,
+// 1 gust core). Local wind speed ≈ GUST_SPEED*(0.6 + 0.9*strength) m/s. One texture fetch.
+vec3 windGust(vec2 xz){ vec4 m = gustMap(xz); return vec3(normalize(m.zw + vec2(1e-5, 0.0)), m.y); }
+// windBend(xz): how far grass and branches are leaning with the gust right now (0..1)
+float windBend(vec2 xz){ return gustMap(xz).x; }
+`;
+
+// ── small math ──
+const Q = {
+  mul(out, a, b) {
+    const ax = a[0], ay = a[1], az = a[2], aw = a[3], bx = b[0], by = b[1], bz = b[2], bw = b[3];
+    out[0] = aw * bx + ax * bw + ay * bz - az * by;
+    out[1] = aw * by - ax * bz + ay * bw + az * bx;
+    out[2] = aw * bz + ax * by - ay * bx + az * bw;
+    out[3] = aw * bw - ax * bx - ay * by - az * bz;
+    return out;
+  },
+  rot(out, q, x, y, z) {
+    const qx = q[0], qy = q[1], qz = q[2], qw = q[3];
+    const tx = 2 * (qy * z - qz * y), ty = 2 * (qz * x - qx * z), tz = 2 * (qx * y - qy * x);
+    out[0] = x + qw * tx + qy * tz - qz * ty;
+    out[1] = y + qw * ty + qz * tx - qx * tz;
+    out[2] = z + qw * tz + qx * ty - qy * tx;
+    return out;
+  },
+  axis(out, x, y, z, a) { const s = Math.sin(a / 2); out[0] = x * s; out[1] = y * s; out[2] = z * s; out[3] = Math.cos(a / 2); return out; },
+  norm(q) { const l = Math.hypot(q[0], q[1], q[2], q[3]) || 1; q[0] /= l; q[1] /= l; q[2] /= l; q[3] /= l; return q; },
+  // integrate world-space angular velocity w over dt
+  spin(q, wx, wy, wz, dt) {
+    const x = q[0], y = q[1], z = q[2], w = q[3], h = 0.5 * dt;
+    q[0] += h * (wx * w + wy * z - wz * y);
+    q[1] += h * (wy * w + wz * x - wx * z);
+    q[2] += h * (wz * w + wx * y - wy * x);
+    q[3] += h * (-wx * x - wy * y - wz * z);
+    return Q.norm(q);
+  },
+  fromBasis(out, r, u, b) { // columns r,u,b (b = backward)
+    const m00 = r[0], m01 = u[0], m02 = b[0], m10 = r[1], m11 = u[1], m12 = b[1], m20 = r[2], m21 = u[2], m22 = b[2];
+    const tr = m00 + m11 + m22;
+    if (tr > 0) { const s = Math.sqrt(tr + 1) * 2; out[3] = 0.25 * s; out[0] = (m21 - m12) / s; out[1] = (m02 - m20) / s; out[2] = (m10 - m01) / s; }
+    else if (m00 > m11 && m00 > m22) { const s = Math.sqrt(1 + m00 - m11 - m22) * 2; out[3] = (m21 - m12) / s; out[0] = 0.25 * s; out[1] = (m01 + m10) / s; out[2] = (m02 + m20) / s; }
+    else if (m11 > m22) { const s = Math.sqrt(1 + m11 - m00 - m22) * 2; out[3] = (m02 - m20) / s; out[0] = (m01 + m10) / s; out[1] = 0.25 * s; out[2] = (m12 + m21) / s; }
+    else { const s = Math.sqrt(1 + m22 - m00 - m11) * 2; out[3] = (m10 - m01) / s; out[0] = (m02 + m20) / s; out[1] = (m12 + m21) / s; out[2] = 0.25 * s; }
+    return Q.norm(out);
+  },
+  slerp(out, a, b, t) {
+    let bx = b[0], by = b[1], bz = b[2], bw = b[3];
+    let d = a[0] * bx + a[1] * by + a[2] * bz + a[3] * bw;
+    if (d < 0) { d = -d; bx = -bx; by = -by; bz = -bz; bw = -bw; }
+    let k0 = 1 - t, k1 = t;
+    if (d < 0.9995) { const o = Math.acos(d), s = Math.sin(o); k0 = Math.sin(k0 * o) / s; k1 = Math.sin(t * o) / s; }
+    out[0] = a[0] * k0 + bx * k1; out[1] = a[1] * k0 + by * k1; out[2] = a[2] * k0 + bz * k1; out[3] = a[3] * k0 + bw * k1;
+    return Q.norm(out);
+  },
+};
+const M4 = {
+  persp(out, fovy, aspect, n, f) {
+    const t = 1 / Math.tan(fovy / 2);
+    out.fill(0);
+    out[0] = t / aspect; out[5] = t; out[10] = (f + n) / (n - f); out[11] = -1; out[14] = 2 * f * n / (n - f);
+    return out;
+  },
+  // camera-relative view rotation from basis (r,u,f)
+  view(out, r, u, f) {
+    out.fill(0);
+    out[0] = r[0]; out[4] = r[1]; out[8] = r[2];
+    out[1] = u[0]; out[5] = u[1]; out[9] = u[2];
+    out[2] = -f[0]; out[6] = -f[1]; out[10] = -f[2];
+    out[15] = 1;
+    return out;
+  },
+  mul(out, a, b) {
+    for (let c = 0; c < 4; c++) for (let r = 0; r < 4; r++) {
+      out[c * 4 + r] = a[r] * b[c * 4] + a[4 + r] * b[c * 4 + 1] + a[8 + r] * b[c * 4 + 2] + a[12 + r] * b[c * 4 + 3];
+    }
+    return out;
+  },
+  // general inverse (cofactors); out must not alias m
+  inv(out, m) {
+    const a00 = m[0], a01 = m[1], a02 = m[2], a03 = m[3], a10 = m[4], a11 = m[5], a12 = m[6], a13 = m[7];
+    const a20 = m[8], a21 = m[9], a22 = m[10], a23 = m[11], a30 = m[12], a31 = m[13], a32 = m[14], a33 = m[15];
+    const b00 = a00 * a11 - a01 * a10, b01 = a00 * a12 - a02 * a10, b02 = a00 * a13 - a03 * a10, b03 = a01 * a12 - a02 * a11;
+    const b04 = a01 * a13 - a03 * a11, b05 = a02 * a13 - a03 * a12, b06 = a20 * a31 - a21 * a30, b07 = a20 * a32 - a22 * a30;
+    const b08 = a20 * a33 - a23 * a30, b09 = a21 * a32 - a22 * a31, b10 = a21 * a33 - a23 * a31, b11 = a22 * a33 - a23 * a32;
+    const d = 1 / (b00 * b11 - b01 * b10 + b02 * b09 + b03 * b08 - b04 * b07 + b05 * b06);
+    out[0] = (a11 * b11 - a12 * b10 + a13 * b09) * d; out[1] = (a02 * b10 - a01 * b11 - a03 * b09) * d;
+    out[2] = (a31 * b05 - a32 * b04 + a33 * b03) * d; out[3] = (a22 * b04 - a21 * b05 - a23 * b03) * d;
+    out[4] = (a12 * b08 - a10 * b11 - a13 * b07) * d; out[5] = (a00 * b11 - a02 * b08 + a03 * b07) * d;
+    out[6] = (a32 * b02 - a30 * b05 - a33 * b01) * d; out[7] = (a20 * b05 - a22 * b02 + a23 * b01) * d;
+    out[8] = (a10 * b10 - a11 * b08 + a13 * b06) * d; out[9] = (a01 * b08 - a00 * b10 - a03 * b06) * d;
+    out[10] = (a30 * b04 - a31 * b02 + a33 * b00) * d; out[11] = (a21 * b02 - a20 * b04 - a23 * b00) * d;
+    out[12] = (a11 * b07 - a10 * b09 - a12 * b06) * d; out[13] = (a00 * b09 - a01 * b07 + a02 * b06) * d;
+    out[14] = (a31 * b01 - a30 * b03 - a32 * b00) * d; out[15] = (a20 * b03 - a21 * b01 + a22 * b00) * d;
+    return out;
+  },
+};
+
+// ── GL ──
+const GLX = (() => {
+  const canvas = document.getElementById('view');
+  const gl = canvas.getContext('webgl2', {
+    antialias: false, alpha: false, depth: true, stencil: false, // the scene renders into POST's own multisampled HDR target
+    powerPreference: 'high-performance', preserveDrawingBuffer: false,
+  });
+  if (!gl) return null;
+  const HEAD = '#version 300 es\nprecision highp float;\nprecision highp int;\n';
+  function sh(type, src) {
+    const s = gl.createShader(type);
+    gl.shaderSource(s, src); gl.compileShader(s);
+    if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) {
+      const log = gl.getShaderInfoLog(s);
+      console.error(log, src.split('\n').map((l, i) => (i + 1) + ': ' + l).join('\n'));
+      throw new Error(log);
+    }
+    return s;
+  }
+  function program(vs, fs) {
+    const p = gl.createProgram();
+    gl.attachShader(p, sh(gl.VERTEX_SHADER, HEAD + vs));
+    gl.attachShader(p, sh(gl.FRAGMENT_SHADER, HEAD + '#define FRAG\n' + fs));
+    gl.linkProgram(p);
+    if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(p));
+    const u = {};
+    const n = gl.getProgramParameter(p, gl.ACTIVE_UNIFORMS);
+    for (let i = 0; i < n; i++) {
+      const info = gl.getActiveUniform(p, i);
+      u[info.name.replace(/\[0\]$/, '')] = gl.getUniformLocation(p, info.name);
+    }
+    return { p, u };
+  }
+  function buffer(data, target, usage) {
+    const b = gl.createBuffer();
+    gl.bindBuffer(target || gl.ARRAY_BUFFER, b);
+    gl.bufferData(target || gl.ARRAY_BUFFER, data, usage || gl.STATIC_DRAW);
+    return b;
+  }
+  // attribs: [[loc, size, stride, offset, divisor]]
+  function attribs(buf, list) {
+    gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+    for (const [loc, size, stride, off, div] of list) {
+      gl.enableVertexAttribArray(loc);
+      gl.vertexAttribPointer(loc, size, gl.FLOAT, false, stride * 4, off * 4);
+      gl.vertexAttribDivisor(loc, div || 0);
+    }
+  }
+  // shared per-frame environment uniforms
+  const env = {
+    sun: new Float32Array([0.5, 0.55, -0.6]), sunCol: new Float32Array(3), zen: new Float32Array(3),
+    hor: new Float32Array(3), amb: new Float32Array(3), cam: new Float32Array(3), fog: 0.00012, time: 0,
+    vp: new Float32Array(16), atm: new Float32Array([1, 1, 1, 0.1]), shadowPass: 0,
+  };
+  // texture units reserved for the atmosphere LUTs (bound once per frame by ATMOS)
+  const UNIT_SKY = 15, UNIT_AP = 14;
+  // the island heightfield: an R32F texture with a float mip chain, bound once on its own unit
+  const UNIT_HEIGHT = 4, heightP = new Float32Array(4);
+  if (typeof ISLAND !== 'undefined' && ISLAND) {
+    gl.getExtension('OES_texture_float_linear'); gl.getExtension('EXT_color_buffer_float');
+    const t = gl.createTexture();
+    gl.activeTexture(gl.TEXTURE0 + UNIT_HEIGHT); gl.bindTexture(gl.TEXTURE_2D, t);
+    gl.texStorage2D(gl.TEXTURE_2D, Math.log2(ISLAND.n) + 1, gl.R32F, ISLAND.n, ISLAND.n);
+    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 4);
+    gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, ISLAND.n, ISLAND.n, gl.RED, gl.FLOAT, ISLAND.h);
+    gl.generateMipmap(gl.TEXTURE_2D);
+    for (const [k, v] of [[gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR], [gl.TEXTURE_MAG_FILTER, gl.LINEAR], [gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE], [gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE]]) gl.texParameteri(gl.TEXTURE_2D, k, v);
+    gl.activeTexture(gl.TEXTURE0);
+    heightP.set([ISLAND.origin, ISLAND.inv, ISLAND.n, 1]);
+  }
+  const UNIT_MAPS = 16, UNIT_REG = 17, M = typeof window !== 'undefined' && window.ISLAND_MAPS;
+  for (const [unit, n, data] of M ? [[UNIT_MAPS, M.nm, M.maps], [UNIT_REG, M.nr, M.regions]] : []) {
+    const t = gl.createTexture();
+    gl.activeTexture(gl.TEXTURE0 + unit); gl.bindTexture(gl.TEXTURE_2D, t);
+    gl.texStorage2D(gl.TEXTURE_2D, 1, gl.RGBA8, n, n);
+    gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, n, n, gl.RGBA, gl.UNSIGNED_BYTE, data);
+    for (const [k, v] of [[gl.TEXTURE_MIN_FILTER, gl.LINEAR], [gl.TEXTURE_MAG_FILTER, gl.LINEAR], [gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE], [gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE]]) gl.texParameteri(gl.TEXTURE_2D, k, v);
+    gl.activeTexture(gl.TEXTURE0);
+  }
+  function setEnv(pr) {
+    const u = pr.u;
+    if (u.uSun) gl.uniform3fv(u.uSun, env.sun);
+    if (u.uSunCol) gl.uniform3fv(u.uSunCol, env.sunCol);
+    if (u.uZen) gl.uniform3fv(u.uZen, env.zen);
+    if (u.uHor) gl.uniform3fv(u.uHor, env.hor);
+    if (u.uAmb) gl.uniform3fv(u.uAmb, env.amb);
+    if (u.uCam) gl.uniform3fv(u.uCam, env.cam);
+    if (u.uFog) gl.uniform1f(u.uFog, env.fog);
+    if (u.uTime) gl.uniform1f(u.uTime, env.time);
+    if (u.uVP) gl.uniformMatrix4fv(u.uVP, false, env.vp);
+    if (u.uAtm) gl.uniform4fv(u.uAtm, env.atm);
+    if (u.uSkyLut) gl.uniform1i(u.uSkyLut, UNIT_SKY);
+    if (u.uApLut) gl.uniform1i(u.uApLut, UNIT_AP);
+    if (u.uHeightP) { gl.uniform4fv(u.uHeightP, heightP); if (u.uHeight) gl.uniform1i(u.uHeight, UNIT_HEIGHT); }
+    if (u.uIslMaps) gl.uniform1i(u.uIslMaps, UNIT_MAPS);
+    if (u.uIslReg) gl.uniform1i(u.uIslReg, UNIT_REG);
+    if (u.uShadowPass) gl.uniform1f(u.uShadowPass, env.shadowPass);
+    if (u.uShadowMap) { if (typeof SHADOW !== 'undefined') SHADOW.setEnvShadow(u); else gl.uniform4f(u.uShadowP, 0, 0, 0, 0); }
+    if (u.uCloudMap) { if (typeof CLOUDS !== 'undefined') CLOUDS.setEnvClouds(u); else gl.uniform4f(u.uMapP, 0, 0, 0, 0); }
+  }
+  // GPU profiler (EXT_disjoint_timer_query_webgl2): prof.mark(name) closes the previous section and opens the next,
+  // prof.frame() closes the last one. Results arrive a few frames later; prof.ms holds per-section medians over the last 60 frames.
+  const tq = gl.getExtension('EXT_disjoint_timer_query_webgl2');
+  const prof = { on: false, ms: {}, samples: {}, total: 0, totals: [], pending: [], pool: [], open: null, frameList: [] };
+  const median = a => { const b = a.slice().sort((x, y) => x - y); return b.length ? b[b.length >> 1] : 0; };
+  prof.mark = name => {
+    if (!prof.on || !tq) return;
+    if (prof.open) gl.endQuery(tq.TIME_ELAPSED_EXT);
+    const q = prof.pool.pop() || gl.createQuery();
+    gl.beginQuery(tq.TIME_ELAPSED_EXT, q);
+    prof.open = q; prof.frameList.push(name, q);
+  };
+  prof.frame = () => {
+    if (!tq) return;
+    if (prof.open) { gl.endQuery(tq.TIME_ELAPSED_EXT); prof.open = null; }
+    if (prof.frameList.length) { prof.pending.push(prof.frameList); prof.frameList = []; }
+    while (prof.pending.length) {
+      const f = prof.pending[0], last = f[f.length - 1];
+      if (!gl.getQueryParameter(last, gl.QUERY_RESULT_AVAILABLE)) break;
+      prof.pending.shift();
+      const disjoint = gl.getParameter(tq.GPU_DISJOINT_EXT);
+      let sum = 0;
+      for (let i = 0; i < f.length; i += 2) {
+        const ms = gl.getQueryParameter(f[i + 1], gl.QUERY_RESULT) / 1e6;
+        prof.pool.push(f[i + 1]);
+        if (disjoint) continue;
+        const a = prof.samples[f[i]] || (prof.samples[f[i]] = []);
+        a.push(ms); if (a.length > 60) a.shift();
+        prof.ms[f[i]] = median(a);
+        sum += ms;
+      }
+      if (!disjoint) { prof.totals.push(sum); if (prof.totals.length > 60) prof.totals.shift(); prof.total = median(prof.totals); }
+    }
+  };
+  prof.reset = () => { prof.ms = {}; prof.samples = {}; prof.totals = []; prof.total = 0; };
+  prof.report = () => Object.entries(prof.ms).map(([k, v]) => `${k} ${v.toFixed(3)}`).join(' | ') + ` || total ${prof.total.toFixed(3)} ms`;
+  return { gl, canvas, program, buffer, attribs, env, setEnv, UNIT_SKY, UNIT_AP, prof };
+})();
+
+// ───── wind gusts: JS twin of windGustField() in GLSL_COMMON (same noise, same numbers) ─────
+const GUST = (() => {
+  const DX = 0.9119, DZ = 0.4104, SPEED = 4.386, MEAN = 0.22; // normalize(WORLD.WIND.xz), |WORLD.WIND|, mean strength
+  // → out = [strength 0..1, local wind speed m/s, direction x, direction z]
+  function field(x, z, t, out) {
+    const qa = x * DX + z * DZ, qb = -x * DZ + z * DX;
+    const spell = vn((qa - 4.4 * t) / 900 + 3.7, qb / 600 + 8.1);
+    const af = qa - 6.2 * t;
+    const wx = vn(af / 110 + 1.3, qb / 150 + 5.2) - 0.5, wz = vn(af / 110 + 7.9, qb / 150 + 2.4) - 0.5;
+    const fa = af + wx * 80, fb = qb + wz * 80;
+    const front = vn(fa / 130 + 9.2, fb / 210 + 2.6) * 0.68 + vn((fa * 0.8 + fb * 0.6) / 55 + 3.1, (fb * 0.8 - fa * 0.6) / 88 + 6.3) * 0.32;
+    const thr = 0.55 - 0.22 * spell;
+    const fm = ss(thr, thr + 0.3, front);
+    const pa = qa - 8.6 * t + wx * 30, pb = qb + 1.3 * t + wz * 20;
+    const paw = vn((pa * 0.87 + pb * 0.5) / 28 + 4.4, (pb * 0.87 - pa * 0.5) / 40 + 0.7) * 0.62
+      + vn((pa * 0.87 - pb * 0.5) / 12 + 1.9, (pb * 0.87 + pa * 0.5) / 18 + 5.1) * 0.38;
+    const g = Math.min(fm * (0.4 + 0.9 * paw), 1);
+    const veer = (vn((qa - 3 * t) / 650 + 6.6, qb / 650 + 1.9) - 0.5) * 0.55 + (paw - 0.5) * 0.35 * g;
+    const c = Math.cos(veer), s = Math.sin(veer);
+    out[0] = g; out[1] = SPEED * (0.6 + 0.9 * g); out[2] = DX * c - DZ * s; out[3] = DZ * c + DX * s;
+    return out;
+  }
+  // the gust map SCENERY renders around the camera: its texture unit and uniforms (origin x, z, 1/size, enabled)
+  const map = { unit: 11, p: new Float32Array(4), bound: false, off: false };
+  return { field, map, DX, DZ, SPEED, MEAN };
+})();
+// every program that reads the gust map (gustMap / windGust / windBend) gets its sampler and uniforms with the environment
+if (GLX) {
+  const base = GLX.setEnv, gl = GLX.gl;
+  GLX.setEnv = pr => {
+    base(pr);
+    const u = pr.u;
+    if (u.uGustMap) {
+      if (!GUST.map.bound) { // no gust map yet (or none at all, e.g. the model viewer): park a 1×1 texture on the unit
+        const t = gl.createTexture();
+        gl.activeTexture(gl.TEXTURE0 + GUST.map.unit); gl.bindTexture(gl.TEXTURE_2D, t);
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([56, 56, 232, 105]));
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST); gl.activeTexture(gl.TEXTURE0);
+        GUST.map.bound = true;
+      }
+      gl.uniform1i(u.uGustMap, GUST.map.unit); if (u.uGustP) gl.uniform4fv(u.uGustP, GUST.map.p);
+    }
+  };
+}

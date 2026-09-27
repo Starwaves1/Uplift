@@ -301,7 +301,9 @@ void main(){
   // the turf instead of cross-fading into it. Close-up scans add the fine detail over the last ~150 m ──
   bool mats = uMat > 0.5 && uDetail > 1.5 && vH > -0.5;
   vec3 albL = vec3(0.0);
+  float fMeadow = grass;                   // where the far wildflower colour belongs (meadowFlowers, below)
   if (mats) {
+    float alpShare = 0.0;
     vec4 im = islandMaps(wp.xz), rg = islandRegions(wp.xz);   // flow, sediment, scree, cliff; Nordic, Med, plateau, volcano
     float nord = rg.x, med = rg.y, plat = rg.z, volc = rg.w, alp = clamp(1.0 - nord - med - plat - volc, 0.0, 1.0);
     matFar = smoothstep(400.0, 2500.0, dist)*0.65; matFp = fp;
@@ -324,11 +326,14 @@ void main(){
       float hiG = smoothstep(850.0, 1350.0, alt);                    // the maquis gives way to alpine turf higher up
       float wf = nord, wa = alp + (med*moist*0.35 + (med*(1.0 - moist*0.35) + plat)*hiG), wd = (med*(1.0 - moist*0.35) + plat)*(1.0 - hiG), wv = volc;
       float s = wf + wa + wd + wv + 1e-4; wf /= s; wa /= s; wd /= s; wv /= s;
+      alpShare = wa;
       if (wf > 0.02) {           // Nordic fell: heath and moss, broken by ice-scoured granite slabs on every knoll
         float slab = smoothstep(0.55, 0.78, pch + ridgeC*0.35 + slope*0.5 - hollow*0.35);
-        if (slab < 0.98) {       // heath: the scan's yellow moss turned toward olive and brown, bog-green in the hollows
-          matTop(L_FELL, p, 1.0, a, g, h);
+        if (slab < 0.98) {       // heath: the scan's yellow moss turned toward olive and brown, bog-green in the hollows,
+          matTop(L_FELL, p, 1.0, a, g, h);            // heather in bloom in drifts on the drier ground
           a = mix(a, lumi(a)*mix(vec3(0.95, 0.95, 0.68), vec3(0.78, 1.05, 0.62), hollow), 0.6);
+          float heather = smoothstep(0.55, 0.75, vn(p/21.0 + vec2(5.3, 1.1))*0.6 + vn(p/70.0 + vec2(2.2, 8.4))*0.4 + ridgeC*0.15 - hollow*0.3);
+          a = mix(a, lumi(a)*vec3(1.3, 0.72, 1.18), heather*0.4);
           ADDL(wMeadow*wf*(1.0 - slab))
         }
         if (slab > 0.02) { matTop(L_GRANITE, p, 1.0, a, g, h); ADDL(wMeadow*wf*slab) }
@@ -352,6 +357,10 @@ void main(){
         float sc = max(shrubs(p, 4.0, dens, fp), shrubs(p + 17.3, 9.5, dens*0.75, fp));
         float ss = max(shrubs(p + sd, 4.0, dens, fp), shrubs(p + sd + 17.3, 9.5, dens*0.75, fp))*(1.0 - sc);
         vec3 bush = vec3(0.045, 0.062, 0.03)*(0.8 + 0.4*vn(p/2.1 + vec2(3.3, 9.9)));
+        // between the bushes, drifts in flower: mostly lavender, broom in places, a little cistus
+        float fl = smoothstep(0.62, 0.82, vn(p/13.0 + vec2(8.8, 4.4)))*(1.0 - plat*0.6), sp = vn(p/90.0 + vec2(1.4, 6.6));
+        vec3 bloom = sp < 0.62 ? vec3(0.13, 0.09, 0.26) : (sp < 0.8 ? vec3(0.55, 0.42, 0.03) : vec3(0.62, 0.5, 0.55));
+        a = mix(a, bloom, fl*0.3);
         a = mix(a*(1.0 - 0.45*ss), bush, sc);
         h = mix(h, 0.85, sc);
         ADDL(wMeadow*wd)
@@ -417,6 +426,7 @@ void main(){
     n = normalize(mix(nTop, triN, clamp(wall*1.2, 0.0, 1.0)));
     cav = (hb - 0.5)*0.8;
     grass = wMeadow*smoothstep(2.0, 6.0, vH);
+    fMeadow = grass*alpShare;              // wildflowers only in alpine and valley meadows, not garrigue or heath
     #undef ADDL
   }
   // per-pixel relief (heightfield slopes added to the vertex normal): hummocks, clods, pebbles; rock is much rougher
@@ -513,7 +523,7 @@ void main(){
   }
   // scene-linear lighting: sun (grass blades scatter a little light past the terminator), sky dome, sunlit-ground bounce
   if (!mats) col = toLin(col);
-  col = meadowFlowers(col, wp, n, dist, grass, vForest); // view range: the wildflower patches as colour past ~200 m
+  col = meadowFlowers(col, wp, n, dist, fMeadow, vForest); // view range: the wildflower patches as colour past ~200 m
   float gw = grass*0.15;
   float diff = clamp((dot(n, uSun) + gw)/(1.0 + gw), 0.0, 1.0);
   float casc;

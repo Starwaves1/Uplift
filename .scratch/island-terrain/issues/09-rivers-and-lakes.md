@@ -5,7 +5,7 @@ game: the great valley's river, the rivers at the fjord heads, and the river in 
 drawn with the right width, level and flow direction, and should meet the sea and the lakes cleanly. Cull the spurious
 lakes the basin-filling left behind (small puddles and lakes on hillsides that no real landscape would hold).
 
-**Blocked by:** 03 — South-east limestone plateau and gorge; 02 — Glacial fjords from the landscape model; 08 — Eastern valley head
+**Blocked by:** 03 — South-east limestone plateau and gorge; 02 — Glacial fjords from the landscape model; 08 — Eastern valley head; 19 — River and lake water rendering
 
 **Status:** ready-for-agent
 
@@ -15,3 +15,8 @@ lakes the basin-filling left behind (small puddles and lakes on hillsides that n
 - [ ] Rivers join lakes and the sea without seams
 - [ ] Every remaining lake is plausible; hillside puddles are gone
 - [ ] Reviewed in the game following the great valley river and the gorge river, with screenshots
+
+## Comments
+
+- 2026-09-27: the game-side rendering of rivers is split out into ticket 19 so it can start now. This ticket keeps the
+  generator side: carving channels, gravel bars, and culling spurious lakes.

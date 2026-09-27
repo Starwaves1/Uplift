@@ -52,9 +52,14 @@ from it.
   - 6 glacial till/moraine
   - 7 alluvial loam
   - 8+ reserved
-- **GLSL_COMMON:** `vec4 islandGround(vec2 q)` (raw, nearest) and
-  `vec4 islandGroundBlend(vec2 q, out ivec4 types, out vec4 w)`.
+- **GLSL_COMMON:** all helpers use texelFetch, so no filtering touches the indices.
+  - `float islandGroundOn()`: 1 when the file loaded.
+  - `vec4 islandGround(vec2 q)`: the texel containing q, decoded as x = rock type as float, y = exposure 0..1,
+    z = depth in metres, w = sediment index as float.
+  - `void islandGroundTexels(vec2 q, out vec4 g00, out vec4 g10, out vec4 g01, out vec4 g11, out vec2 f)`: the 4
+    surrounding texels decoded the same way, plus the bilinear fraction.
 - **JS:** `islandGround(x, z)` returns {bedrock, exposure, depth, sediment}.
+- **Later (v2):** a wetness/drainage-saturation channel for bogs, seeps and wet meadows.
 
 ## Bookmarks
 

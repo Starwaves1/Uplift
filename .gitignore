@@ -17,3 +17,5 @@ windborne-source.zip
 # downloaded material sources (Poly Haven CC0, ~750 MB; re-fetch with assets/fetch_polyhaven.py) and review sheets
 assets/src/
 assets/preview/
+# review renders saved by tools/shot_server.py
+shots/

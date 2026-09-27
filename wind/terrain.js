@@ -164,6 +164,14 @@ void matTri(int L, vec3 p, vec3 n0, float k, out vec3 a, out vec3 n, out float h
     a += texture(uMatC, u).rgb*bw.y; h += q.b*bw.y; d += vec3(s.x, 0.0, s.y)*bw.y; }
   n = normalize(n0 - d);
 }
+// shrub cover seen from above: round bushes on a jittered lattice of spacing s (m), each present with probability dens and
+// its own size; where a bush gets smaller than a pixel (fp m) it fades to the average cover instead of shimmering
+float shrubs(vec2 p, float s, float dens, float fp){
+  vec2 v = vorF1(p/s);
+  float r = 0.32 + 0.24*fract(v.y*13.7), e = max(fp/s, 0.05);
+  float m = step(v.y, dens)*smoothstep(r + e, r - e, v.x);
+  return mix(m, dens*0.62, smoothstep(0.25, 0.8, fp/s));
+}
 float gliderShadow(vec3 wp){
   if (uSun.y < 0.05) return 0.0;
   float t = (uG.y - wp.y)/uSun.y;
@@ -265,12 +273,19 @@ void main(){
         if (stony < 0.98) { matTop(L_ALPINE, p, 1.0, a, g, h); ADDL(wMeadow*wa*(1.0 - stony)) }
         if (stony > 0.02) { matTop(L_BROKEN, p, 1.0, a, g, h); ADDL(wMeadow*wa*stony) }
       }
-      if (wd > 0.02) {           // Mediterranean garrigue: pale stony ground mottled with dark scrub; karst pavement on the plateau
-        float scrub = smoothstep(0.42, 0.62, pch + moist*0.3 + shaded*0.18 - 0.14 - plat*0.15);    // thicker on shaded slopes
+      if (wd > 0.02) {           // Mediterranean garrigue: pale stony ground dotted with maquis; karst pavement on the plateau
         if (plat > 0.5) { matTop(L_KARST, p, 6.0, a, g, h); a = lumi(a)*vec3(1.04, 1.0, 0.9)*1.15; }
         else { matTop(L_DRY, p, 1.0, a, g, h); a = mix(a, lumi(a)*vec3(1.1, 1.0, 0.8), 0.55); }      // pale buff limestone ground
-        ADDL(wMeadow*wd*(1.0 - scrub))
-        if (scrub > 0.02) { matTop(L_FELL, p, 0.5, a, g, h); a = vec3(0.05, 0.068, 0.032)*(lumi(a)/MLUM[L_FELL]); h = h*0.5 + 0.5; ADDL(wMeadow*wd*scrub) }
+        // the maquis: single shrubs (~4 m apart) and bigger bushes (~9 m), thick in gullies and on shaded slopes, sparse
+        // on sunny ridges, each with its short shadow thrown away from the sun
+        float dens = smoothstep(0.05, 0.62,vn(p/33.0 + vec2(7.7, 2.6))*0.55 + vn(p/140.0 + vec2(1.9, 5.3))*0.45 + moist*0.35 + shaded*0.22 - 0.2 - plat*0.25);
+        vec2 sd = uSun.xz/max(uSun.y, 0.35)*1.3;
+        float sc = max(shrubs(p, 4.0, dens, fp), shrubs(p + 17.3, 9.5, dens*0.75, fp));
+        float ss = max(shrubs(p + sd, 4.0, dens, fp), shrubs(p + sd + 17.3, 9.5, dens*0.75, fp))*(1.0 - sc);
+        vec3 bush = vec3(0.045, 0.062, 0.03)*(0.8 + 0.4*vn(p/2.1 + vec2(3.3, 9.9)));
+        a = mix(a*(1.0 - 0.45*ss), bush, sc);
+        h = mix(h, 0.85, sc);
+        ADDL(wMeadow*wd)
       }
       if (wv > 0.02) {           // the volcano: grass low on its skirts, dark scoria and ash above
         float ash = smoothstep(650.0, 1250.0, alt + (pch - 0.5)*300.0);

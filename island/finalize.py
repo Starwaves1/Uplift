@@ -33,6 +33,7 @@ del D0
 Ht = F.interpolate(torch.tensor(h0, device=fx.dev, dtype=torch.float32)[None, None], size=(N, N), mode='bicubic', align_corners=False)[0, 0]
 D = ds.Design(N)
 w_nord, w_med, w_volc, w_alp, w_plat = g(D.w_nord), g(D.w_med), g(D.w_volc), g(D.w_alp), g(D.w_plateau)
+w_gran = np.clip(w_nord + g(D.w_pluton), 0, 1)       # granite: the Nordic highland and the head massif's pluton
 # micro-relief: roughness where it's steep, calm on flats; Nordic ground gets glacially scoured knolls and hollows
 gy, gx = torch.gradient(Ht, spacing=dx)
 steep = torch.sqrt(gx * gx + gy * gy).clamp(0, 1.5)
@@ -62,12 +63,12 @@ lap('plateau beds')
 H = torch.tensor(h, device=fx.dev, dtype=torch.float32)
 before = H.clone()
 land = (H > 2).float()
-hard = torch.tensor(np.clip(0.55 * w_nord + 0.5 * w_volc, 0, 0.8), device=fx.dev, dtype=torch.float32)
+hard = torch.tensor(np.clip(0.55 * w_gran + 0.5 * w_volc, 0, 0.8), device=fx.dev, dtype=torch.float32)
 detail.droplets(H, dx, int(N * N * 0.8), spawn=land * (1 + 0.5 * torch.tensor(w_nord, device=fx.dev)) + 1e-4, life=64,
                 inertia=0.3, capacity=2.0, erode=0.08, deposit=0.03, evaporate=0.02, radius=3, hardness=hard)
 lap('droplets')
 dep = (H - before).clamp(min=0)
-talus_tan = torch.tensor(0.9 + 0.35 * w_nord + 0.3 * w_volc, device=fx.dev, dtype=torch.float32)
+talus_tan = torch.tensor(0.9 + 0.35 * w_gran + 0.3 * w_volc, device=fx.dev, dtype=torch.float32)
 pre_t = H.clone()
 detail.talus(H, dx, talus_tan, iters=30)
 scree = (H - pre_t).clamp(min=0)

@@ -5,7 +5,7 @@ game: the great valley's river, the rivers at the fjord heads, and the river in 
 drawn with the right width, level and flow direction, and should meet the sea and the lakes cleanly. Cull the spurious
 lakes the basin-filling left behind (small puddles and lakes on hillsides that no real landscape would hold).
 
-**Blocked by:** 03 — South-east limestone plateau and gorge; 07 — Nordic upland character; 08 — Eastern valley head
+**Blocked by:** 03 — South-east limestone plateau and gorge; 02 — Glacial fjords from the landscape model; 08 — Eastern valley head
 
 **Status:** ready-for-agent
 

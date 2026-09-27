@@ -317,6 +317,44 @@ vec3 skyCol(vec3 d){
   float az = atan(d.z, d.x) - atan(sh.y, sh.x);
   return texture(uSkyLut, vec2(fract(az/(2.0*PI_) + 0.5), clamp(v, 0.004, 0.996))).rgb;
 }
+// ── baked terrain light (island_light.bin from island/bake_light.py; ISLAND_SKY at the end of core.js) ──
+// How much of the sky the ground at world xz q sees, relative to open ground: 1 on flat land, open slopes and crests;
+// less in valleys, gullies, hollows and at the feet of cliffs. Two parts, because the sky isn't even: the zenith's even
+// radiance (uZen), and the bright band toward the horizon that makes up the rest of the sky light (uAmb − uZen) — which
+// the relief hides much sooner (a valley floor between 30° slopes keeps 87% of the even part but 54% of the band).
+// Everything returns exactly 1 where there's no map (the procedural world, a missing file) or while it's switched off,
+// so lighting falls back to today's. Fragment shaders get a mip filtered to the pixel (call these in uniform control
+// flow); vertex shaders read the finest level.
+uniform sampler2D uIslSky; uniform vec4 uIslSkyP; // (origin m, 1/size 1/m, enabled, -)
+// → (even sky, horizon band) visibility
+vec2 islandSkyVis(vec2 q){
+  if (uIslSkyP.z < 0.5) return vec2(1.0);
+#ifdef FRAG
+  return texture(uIslSky, (q - uIslSkyP.x)*uIslSkyP.y).rg;
+#else
+  return textureLod(uIslSky, (q - uIslSkyP.x)*uIslSkyP.y, 0.0).rg;
+#endif
+}
+// GTAO's multi-bounce fit (Jimenez et al. 2016): an enclosed spot gets back some of the light its surroundings bounce,
+// more the brighter they are (alb, linear albedo; taken as the spot's own) — snow in a gully doesn't go grey
+vec3 aoMultiBounce(float v, vec3 alb){
+  vec3 a = 2.0404*alb - 0.3324, b = -4.7951*alb + 0.6417, c = 2.7552*alb + 0.6903;
+  return clamp(((v*a + b)*v + c)*v, vec3(v), vec3(1.0));
+}
+// the factor for the sky (ambient) light at q, per colour channel: multiply the sky term by it — on the terrain after its
+// usual (1 + n.y)/2 of the open-ground model, on things standing on the ground (plants, rocks, buildings) on their
+// whole sky term. Dims and cools the ambient in valleys (the hidden horizon band is the whiter part of the sky).
+vec3 islandSkyLight(vec2 q, vec3 alb){
+  vec2 s = islandSkyVis(q);
+  vec3 ev = min(uZen, uAmb);                    // the even part of the sky light; the rest is the band's
+  return (ev*aoMultiBounce(s.x, alb) + (uAmb - ev)*aoMultiBounce(s.y, alb))/max(uAmb, vec3(1e-6));
+}
+// the same as one number, without the bounce (e.g. to dim a specular sky reflection)
+float islandSky(vec2 q){
+  vec2 s = islandSkyVis(q);
+  float z = clamp(dot(uZen, vec3(0.2126, 0.7152, 0.0722))/max(dot(uAmb, vec3(0.2126, 0.7152, 0.0722)), 1e-6), 0.0, 1.0);
+  return mix(s.y, s.x, z);
+}
 #ifdef FRAG
 // aerial perspective from the froxel volume: in-scattered light added, transmittance multiplied
 vec4 aerial(float distM){
@@ -733,3 +771,45 @@ if (GLX) {
     }
   };
 }
+
+// ───── baked terrain light: the sky visibility map (window.ISLAND_LIGHT, decoded by boot.js from island_light.bin) ─────
+// An RG8 texture with mips (even sky, horizon band; a one-channel file serves both), parked on its own unit; every
+// program that calls islandSkyVis() & co. gets its sampler and uniforms with the environment. ISLAND_SKY.on = false
+// switches it off (everything → 1, the lighting as it was before the bake); test builds also take ?nosky and toggle it
+// with the B key, for before/after looks. Without the file there's a 1×1 stand-in and everything is 1.
+const ISLAND_SKY = (() => {
+  const S = { unit: 19, p: new Float32Array(4), ready: false, on: true, n: 0 };
+  if (!GLX) return S;
+  const gl = GLX.gl, L = typeof window !== 'undefined' && window.ISLAND_LIGHT;
+  const t = gl.createTexture();
+  gl.activeTexture(gl.TEXTURE0 + S.unit); gl.bindTexture(gl.TEXTURE_2D, t);
+  gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+  if (L && typeof ISLAND !== 'undefined' && ISLAND) {
+    let rg = L.data;
+    if (L.ch === 1) { rg = new Uint8Array(L.n * L.n * 2); for (let i = 0; i < L.data.length; i++) rg[i * 2] = rg[i * 2 + 1] = L.data[i]; }
+    gl.texStorage2D(gl.TEXTURE_2D, Math.floor(Math.log2(L.n)) + 1, gl.RG8, L.n, L.n);
+    gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, L.n, L.n, gl.RG, gl.UNSIGNED_BYTE, rg);
+    gl.generateMipmap(gl.TEXTURE_2D);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+    const aniso = gl.getExtension('EXT_texture_filter_anisotropic'); // the ground is mostly seen at grazing angles
+    if (aniso) gl.texParameterf(gl.TEXTURE_2D, aniso.TEXTURE_MAX_ANISOTROPY_EXT, Math.min(4, gl.getParameter(aniso.MAX_TEXTURE_MAX_ANISOTROPY_EXT)));
+    S.p.set([L.origin, 1 / L.size, 1, 0]); S.ready = true; S.n = L.n;
+  } else {
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RG8, 1, 1, 0, gl.RG, gl.UNSIGNED_BYTE, new Uint8Array([255, 255]));
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+  }
+  if (typeof window !== 'undefined' && window.WB_MUTE) { // test builds: before/after switches
+    if (new URLSearchParams(location.search).has('nosky')) S.on = false;
+    window.addEventListener('keydown', e => { if (e.code === 'KeyB' && !e.repeat) { S.on = !S.on; console.log('baked sky light', S.on ? 'on' : 'off'); } });
+  }
+  for (const [k, v] of [[gl.TEXTURE_MAG_FILTER, gl.LINEAR], [gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE], [gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE]]) gl.texParameteri(gl.TEXTURE_2D, k, v);
+  gl.pixelStorei(gl.UNPACK_ALIGNMENT, 4);
+  gl.activeTexture(gl.TEXTURE0);
+  const base = GLX.setEnv;
+  GLX.setEnv = pr => {
+    base(pr);
+    const u = pr.u;
+    if (u.uIslSky) { S.p[2] = S.ready && S.on ? 1 : 0; gl.uniform1i(u.uIslSky, S.unit); if (u.uIslSkyP) gl.uniform4fv(u.uIslSkyP, S.p); }
+  };
+  return S;
+})();

@@ -754,6 +754,7 @@ void main(){
   }
   if (uShadowPass > 0.5) { o = vec4(0.0); return; }
   gShadow = sunShadow(vRel, n);
+  gSky = islandSkyLight(vRel.xz + uCam.xz, alb); // [ticket 20] a plant in a deep valley sees less sky than one on a ridge
   vec3 col = lightMesh(alb, n, v, vEx.x, vEx.w, vEx.z);
   o = vec4(fogIt(col, vRel), 1.0);
 }`);
@@ -1485,6 +1486,7 @@ void main(){
   if (tint > 1.5) col = mix(col, dot(col, vec3(0.35, 0.55, 0.1))*vec3(1.95, 1.5, 0.42), 0.5*fol);
   vec3 v = normalize(vRel);
   gShadow = impShadow(vRel, vRotT.w);
+  gSky = islandSkyLight(vRel.xz + uCam.xz, toLin(col)); // [ticket 20]
   vec3 lit = lightMesh(toLin(col), n, v, ao, 0.0, fol*0.9);
   o = vec4(fogIt(lit, vRel), A.a);
 }`);

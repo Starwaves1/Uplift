@@ -92,15 +92,48 @@
     const lakes = jl ? JSON.parse(new TextDecoder().decode(all.subarray(o, o + jl))) : [];
     return { nm, maps, nr, regions, nl, lakeMask, lakes };
   }
+  // island_light.bin (optional; island/bake_light.py): the baked sky visibility. 'WBIL', u32 version, u32 n, u32 channels,
+  // f32 size, f32 origin, then deflate: each channel's n² bytes in turn (rows south, columns east), each stored as
+  // (value − its median-edge prediction) mod 256. → ISLAND_LIGHT { n, ch, size, origin, data: n²·ch bytes, channels
+  // interleaved }. Missing or unreadable → the terrain keeps its unbaked sky light.
+  async function loadLight(url) {
+    const buf = new Uint8Array(await (await get(url)).arrayBuffer());
+    if (String.fromCharCode(buf[0], buf[1], buf[2], buf[3]) !== 'WBIL') throw new Error('not an island light file');
+    const dv = new DataView(buf.buffer);
+    const ver = dv.getUint32(4, true), n = dv.getUint32(8, true), ch = dv.getUint32(12, true);
+    if (ver !== 1 || ch < 1 || ch > 2) throw new Error(`island light v${ver} with ${ch} channels: not understood`);
+    const size = dv.getFloat32(16, true), origin = dv.getFloat32(20, true), N = n * n;
+    const r = new Uint8Array(await new Response(new Blob([buf.subarray(24)]).stream().pipeThrough(new DecompressionStream('deflate'))).arrayBuffer());
+    if (r.length !== N * ch) throw new Error('island light: truncated');
+    const q = new Uint8Array(N), data = ch === 1 ? q : new Uint8Array(N * ch);
+    for (let k = 0; k < ch; k++) {
+      const o = k * N;
+      for (let x = 0, p = 0; x < n; x++) { q[x] = (p + r[o + x]) & 255; p = q[x]; }
+      for (let y = 1, i = n; y < n; y++) {
+        q[i] = (q[i - n] + r[o + i]) & 255; i++;
+        for (let x = 1; x < n; x++, i++) {
+          const a = q[i - 1], b = q[i - n], c = q[i - n - 1];
+          const mx = a > b ? a : b, mn = a > b ? b : a;
+          q[i] = ((c >= mx ? mn : c <= mn ? mx : a + b - c) + r[o + i]) & 255;
+        }
+      }
+      if (ch > 1) for (let i = 0, j = k; i < N; i++, j += ch) data[j] = q[i];
+    }
+    return { n, ch, size, origin, data };
+  }
   try {
     say('Loading the island…');
     const t0 = performance.now();
     // ?island=NAME loads an alternative island from islands/NAME/ (for comparing versions); default: next to the page
     const name = new URLSearchParams(location.search).get('island'), dir = name && /^[\w-]+$/.test(name) ? `islands/${name}/` : '';
+    const lightP = loadLight(dir + 'island_light.bin').then(L => { console.log('island light', L.n + '²', Math.round(performance.now() - t0) + ' ms'); return L; },
+      e => { console.warn('island light unavailable, the terrain keeps its unbaked sky light:', e); return null; });
     const [isl, maps] = await Promise.all([loadIsland(dir),
       loadMaps(dir + 'island_maps.bin').catch(() => loadMaps('island_maps.bin')).catch(e => { console.warn('island maps unavailable:', e); return null; })]);
     window.ISLAND_DATA = isl; window.ISLAND_MAPS = maps;
     console.log('island', isl.n + '² (' + isl.dx.toFixed(2) + ' m)', Math.round(performance.now() - t0) + ' ms');
+    // the baked light belongs to its own island: no falling back to the default island's (its valleys are elsewhere)
+    window.ISLAND_LIGHT = await lightP;
   } catch (e) {
     console.warn('island data unavailable, using the procedural world:', e);
   }

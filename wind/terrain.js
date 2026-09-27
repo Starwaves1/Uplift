@@ -3,8 +3,11 @@
 const TERRAIN = (() => {
   const { gl, program, buffer, attribs, env, setEnv } = GLX;
   const N = 32, LEAF = 64, LEVELS = 9, MINH = -120, MAXH = 1350;
-  // LOD ranges: a node of level L is drawn out to RK·64·2^L m (scaled down by the quality preset's lod factor)
-  const RK = 2.8;
+  // LOD ranges: a node of level L is drawn out to RK·64·2^L m (scaled by the projection's zoom, and down by the quality
+  // preset's lod factor). Vertex spacing is then a fixed angle: at RK 7 and a 72° field of view a triangle spans 3–7 px
+  // at 1080p (it was 8–17 px at RK 2.8), so 16 m spacing reaches 3.6 km and 32 m 7 km; the shading beyond the 8 m ring
+  // comes from the far-field normal map, at the stored grid's resolution whatever the spacing (view range, ticket 14)
+  const RK = 7.0;
   const RANGE = new Float64Array(LEVELS);
   for (let L = 0; L < LEVELS; L++) RANGE[L] = LEAF * Math.pow(2, L) * RK;
 
@@ -49,6 +52,7 @@ layout(location=1) in vec4 aNode;
 layout(location=2) in vec2 aSlot;
 uniform mat4 uVP; uniform highp sampler2D uHC; uniform sampler2D uHM; uniform float uRangeK;
 out vec3 vRel; out vec3 vN; out float vH; out float vForest; out float vVar; out float vVar2; out float vCurv; out float vDry;
+out float vLod;
 void main(){
   float cell = aNode.z / 32.0;
   vec2 wp = aNode.xy + aGrid*cell;
@@ -73,9 +77,21 @@ void main(){
   vVar = vn(wp*0.004 + vec2(5.5, 2.5));
   vVar2 = vn(wp*0.021 + vec2(1.5, 8.5));
   vRel = vec3(wp.x - uCam.x, h - uCam.y, wp.y - uCam.z);
+  vLod = aNode.w + k;
   gl_Position = uVP*vec4(vRel, 1.0);
 }`;
-  const TFS = GLSL_COMMON + `
+  // The ground's shading normal (view range, ticket 14): the mesh's own vertex normals near the camera (finer than the
+  // stored grid, with the micro-relief); from the 8 m ring outward, where the mesh is coarser than the grid, the island's
+  // far-field normal map (below), filtered by the pixel's footprint — distant ground is lit with every ridge and gully
+  // the heightfield has, however coarse the mesh there. vLod: the node's LOD plus its morph (continuous across rings).
+  const TFAR = `
+in float vLod; uniform sampler2D uFarN;
+vec3 groundNormal(vec3 wp, vec3 nv){
+  vec2 e = texture(uFarN, (wp.xz - uHeightP.x)*uHeightP.y/uHeightP.z).rg*2.0 - 1.0;
+  float t = uHeightP.w > 0.5 ? smoothstep(1.6, 2.8, vLod) : 0.0;
+  return normalize(mix(nv, vec3(e.x, sqrt(max(1.0 - dot(e, e), 0.0)), e.y), t));
+}`;
+  const TFS = GLSL_COMMON + TFAR + `
 in vec3 vRel; in vec3 vN; in float vH; in float vForest; in float vVar; in float vVar2; in float vCurv; in float vDry;
 uniform vec3 uG, uGR, uGF, uGV; uniform float uGAgl, uDetail;
 const float SNOWLINE = 1350.0; // m
@@ -188,7 +204,7 @@ float gliderShadow(vec3 wp){
   return m*(1.0 - smoothstep(40.0, 420.0, t));
 }
 void main(){
-  vec3 n = normalize(vN);
+  vec3 n = groundNormal(vRel + uCam, normalize(vN));
   vec3 wp = vRel + uCam;
   float dist = length(vRel);
   float slope = 1.0 - n.y;
@@ -592,6 +608,34 @@ void main(){
     gl.useProgram(prog);
   }
 
+  // ── far-field normals (see TFAR): the heightfield's normals at its stored resolution (central differences — the
+  // Catmull-Rom surface's own slope at each sample), with a full mip chain and anisotropic filtering. Built once on the
+  // GPU; RG8 holds the unit normal's x and z. Parked on its own texture unit ──
+  const UNIT_FN = 19;
+  if (typeof ISLAND !== 'undefined' && ISLAND) {
+    const n = ISLAND.n, t = gl.createTexture(), fb = gl.createFramebuffer(), vao = gl.createVertexArray();
+    gl.activeTexture(gl.TEXTURE0 + UNIT_FN); gl.bindTexture(gl.TEXTURE_2D, t);
+    gl.texStorage2D(gl.TEXTURE_2D, Math.log2(n) + 1, gl.RG8, n, n);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, t, 0);
+    const P = program(`void main(){ vec2 p = vec2((gl_VertexID<<1)&2, gl_VertexID&2); gl_Position = vec4(p*2.0 - 1.0, 0.0, 1.0); }`,
+      GLSL_COMMON + `out vec4 o;
+void main(){
+  ivec2 i = ivec2(gl_FragCoord.xy);
+  vec3 nn = normalize(vec3(hmF(i - ivec2(1, 0)) - hmF(i + ivec2(1, 0)), 2.0/uHeightP.y, hmF(i - ivec2(0, 1)) - hmF(i + ivec2(0, 1))));
+  o = vec4(nn.xz*0.5 + 0.5, 0.0, 1.0);
+}`);
+    gl.disable(gl.DEPTH_TEST); gl.disable(gl.BLEND); gl.disable(gl.CULL_FACE);
+    gl.viewport(0, 0, n, n); gl.useProgram(P.p); setEnv(P);
+    gl.bindVertexArray(vao); gl.drawArrays(gl.TRIANGLES, 0, 3); gl.bindVertexArray(null);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null); gl.deleteFramebuffer(fb);
+    gl.generateMipmap(gl.TEXTURE_2D);
+    for (const [k, v] of [[gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR], [gl.TEXTURE_MAG_FILTER, gl.LINEAR], [gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE], [gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE]]) gl.texParameteri(gl.TEXTURE_2D, k, v);
+    const an = gl.getExtension('EXT_texture_filter_anisotropic');
+    if (an) gl.texParameterf(gl.TEXTURE_2D, an.TEXTURE_MAX_ANISOTROPY_EXT, Math.min(16, gl.getParameter(an.MAX_TEXTURE_MAX_ANISOTROPY_EXT)));
+    gl.activeTexture(gl.TEXTURE0);
+  }
+
   // ── water: one huge camera-centred quad at y=0 ──
   const WVS = GLSL_COMMON + `
 layout(location=0) in vec2 aP;
@@ -769,9 +813,11 @@ void main(){
   const stats = { nodes: 0, shadowNodes: 0, generated: 0 };
   let viewLod = 1; // quality preset: > 1 coarsens the terrain everywhere (view and shadows alike)
   let detail = 2;  // per-pixel surface detail octaves: 0 none, 1 two, 2 three
+  let zoomK = 1;   // the projection's zoom relative to a 72° field of view: narrower keeps the finer rings further out
   // CDLOD selection against env.vp's frustum (the camera's, or a shadow cascade's); lod > 1 coarsens
   function selectAll(cam, lod) {
-    cx = cam.pos[0]; cy = cam.pos[1]; cz = cam.pos[2]; lodScale = lod * viewLod;
+    zoomK = Math.min(2, Math.max(0.6, 0.7265 / (cam.tanY || 0.7265)));
+    cx = cam.pos[0]; cy = cam.pos[1]; cz = cam.pos[2]; lodScale = lod * viewLod / zoomK;
     setFrustum(env.vp);
     for (const l of lists) l.length = 0;
     count = 0;
@@ -821,7 +867,7 @@ void main(){
     stats.shadowNodes += selectAll(cam, lod);
     gl.enable(gl.CULL_FACE);
     gl.useProgram(TPS.p); setEnv(TPS);
-    drawNodes(TPS, RK / (lod * viewLod));
+    drawNodes(TPS, RK * zoomK / (lod * viewLod));
     gl.disable(gl.CULL_FACE);
   }
   function beginFrame() { frameNo++; stats.generated = 0; stats.shadowNodes = 0; }
@@ -845,9 +891,10 @@ void main(){
       gl.activeTexture(gl.TEXTURE0 + UNIT_MN); gl.bindTexture(gl.TEXTURE_2D_ARRAY, mat.n); gl.activeTexture(gl.TEXTURE0);
     }
     gl.uniform1i(TP.u.uMatC, UNIT_MC); gl.uniform1i(TP.u.uMatN, UNIT_MN); gl.uniform1f(TP.u.uMat, mat.ready && mat.on ? 1 : 0);
+    gl.uniform1i(TP.u.uFarN, UNIT_FN);
     gl.uniform3fv(TP.u.uG, g.pos); gl.uniform3fv(TP.u.uGR, g.r); gl.uniform3fv(TP.u.uGF, g.f);
     gl.uniform3fv(TP.u.uGV, g.vel); gl.uniform1f(TP.u.uGAgl, g.agl);
-    drawNodes(TP, RK / viewLod);
+    drawNodes(TP, RK * zoomK / viewLod);
     gl.disable(gl.CULL_FACE);
   }
   // depthTex: the resolved scene depth (terrain under the water) or null; nearFar: the camera projection's planes

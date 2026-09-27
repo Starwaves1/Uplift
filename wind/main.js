@@ -48,9 +48,11 @@
   // ── quality presets ──
   // budget: the internal pixel count Auto resolution starts from (it then scales 55–100% to hold the refresh rate);
   // a Retina laptop would otherwise render 5–6 megapixels
+  // terrainLod divides the terrain's LOD ranges (High's rings reach 2.5× further since ticket 14; Medium and Low keep
+  // their old reach until they're derived again)
   const PRESETS = {
-    low: { msaa: 1, fxaa: true, budget: 1.25e6, terrainLod: 1.6, grass: false, detail: 0 },
-    medium: { msaa: 2, fxaa: false, budget: 2.1e6, terrainLod: 1.25, grass: true, detail: 1 },
+    low: { msaa: 1, fxaa: true, budget: 1.25e6, terrainLod: 4.0, grass: false, detail: 0 },
+    medium: { msaa: 2, fxaa: false, budget: 2.1e6, terrainLod: 3.125, grass: true, detail: 1 },
     high: { msaa: 4, fxaa: false, budget: 3.7e6, terrainLod: 1.0, grass: true, detail: 2 },
   };
   // first run: pick from the GPU (discrete → High, Apple silicon → Medium, other integrated / mobile → Low)

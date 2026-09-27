@@ -14,3 +14,10 @@ and refresh the downloadable source zip so it includes the generator.
 - [ ] A cold load on a fresh browser works, with no console errors
 - [ ] The source zip contains the game modules, the build script and the island generator
 - [ ] Flown on the published artifact from start to the fjords and the gorge, with screenshots
+
+## Comments
+
+- 2026-09-27 (ticket 15): the heights are now 8192² in format 2, split over several files: publish `island.bin`
+  **and** `island-1.bin` (and any further `island-N.bin` an export writes) next to the page, plus `island_maps.bin`.
+  Each is ≤ 14 MB; with the materials the page totals ~43 MB. The committed `windborne.html` is still the pre-island
+  build, so rebuild it (`sh build-wind.sh`) before publishing.

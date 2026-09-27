@@ -40,10 +40,14 @@ def droplets(H, dx, n_drops, *, batch=None, life=48, inertia=0.12, capacity=4.0,
     n = H.shape[0]
     g = torch.Generator(device=dev).manual_seed(seed)
     Hc = H / dx                                   # heights in cell units
-    flat_w = None
+    flat_w = cdf = None
     if spawn is not None:
         flat_w = spawn.flatten().float()
         flat_w = flat_w / flat_w.sum()
+        if n * n > 1 << 24:          # torch.multinomial takes at most 2^24 categories: sample the CDF instead
+            cdf = torch.cumsum(flat_w.double(), 0)   # float64: one cell's share (~3e-8 at 8192²) is below float32's step
+            cdf /= cdf[-1].clone()
+            flat_w = None
     # erosion brush (radius r): weights on a (2r+1)² footprint
     r = radius
     oy, ox = torch.meshgrid(torch.arange(-r, r + 1, device=dev), torch.arange(-r, r + 1, device=dev), indexing='ij')
@@ -56,8 +60,11 @@ def droplets(H, dx, n_drops, *, batch=None, life=48, inertia=0.12, capacity=4.0,
     done = 0
     while done < n_drops:
         m = min(batch, n_drops - done)
-        if flat_w is not None:
-            idx = torch.multinomial(flat_w, m, replacement=True, generator=g)
+        if flat_w is not None or cdf is not None:
+            if cdf is not None:
+                idx = torch.searchsorted(cdf, torch.rand(m, device=dev, generator=g, dtype=torch.float64), right=True).clamp(max=n * n - 1)
+            else:
+                idx = torch.multinomial(flat_w, m, replacement=True, generator=g)
             px = (idx % n).float() + torch.rand(m, device=dev, generator=g)
             py = (idx // n).float() + torch.rand(m, device=dev, generator=g)
         else:

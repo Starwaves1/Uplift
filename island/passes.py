@@ -6,10 +6,18 @@ import numpy as np
 from scipy import ndimage
 
 
-def softmin(a, b, k):
-    """Smooth minimum (k metres of rounding where the two surfaces meet)."""
-    hh = np.clip(0.5 + 0.5 * (b - a) / k, 0, 1)
-    return b + (a - b) * hh - k * hh * (1 - hh)
+def softmin(a, b, k, rows=512):
+    """Smooth minimum (k metres of rounding where the two surfaces meet). Same-shape grids, a band of rows at a time (the
+    same numbers; at 8192² the whole-grid temporaries alone were 2–3 GB)."""
+    if np.shape(a) != np.shape(b) or np.ndim(a) < 1:              # scalars / broadcasting: all at once
+        hh = np.clip(0.5 + 0.5 * (b - a) / k, 0, 1)
+        return b + (a - b) * hh - k * hh * (1 - hh)
+    out = np.empty(np.shape(a), np.result_type(a, b))
+    for i in range(0, out.shape[0], rows):
+        aa, bb = a[i:i + rows], b[i:i + rows]
+        hh = np.clip(0.5 + 0.5 * (bb - aa) / k, 0, 1)
+        out[i:i + rows] = bb + (aa - bb) * hh - k * hh * (1 - hh)
+    return out
 
 
 def polyline_raster(pts_m, dx, n, values):
@@ -36,13 +44,16 @@ def trough(h, dx, pts_m, floor, width_m, wall=0.0225, power=1.5, soft=25.0, roug
     n = h.shape[0]
     mask, (fl, wd), arc = polyline_raster(pts_m, dx, n, [floor, width_m])
     d, (iy, ix) = ndimage.distance_transform_edt(~mask, return_indices=True)
-    d = d * dx
+    d *= dx
     F = fl[iy, ix]; W = wd[iy, ix]
+    del mask, fl, wd, arc, iy, ix                   # (temporaries go as soon as they're used: 0.5 GB each at 8192²)
     e = np.maximum(0, d - W / 2)
     z = F + 0.015 * np.minimum(d, W / 2) ** 1.2 / 10 + wall * e ** power
     if rough is not None:
         z = z + rough * np.clip(e / 300, 0, 1)
+    del e
     out = softmin(h, z, soft)
+    del z
     near = d < reach
     return np.where(near, out, h), d, F, W
 
@@ -50,8 +61,8 @@ def trough(h, dx, pts_m, floor, width_m, wall=0.0225, power=1.5, soft=25.0, roug
 def caldera(h, dx, cx_m, cy_m, r_m, floor, rim_soft=40.0):
     """A collapse caldera: near-vertical inner walls down to a flat floor (which will hold a lake)."""
     n = h.shape[0]
-    y, x = np.mgrid[0:n, 0:n] * dx + dx / 2
-    r = np.sqrt((x - cx_m) ** 2 + (y - cy_m) ** 2)
+    y, x = np.ogrid[0:n, 0:n]                        # broadcast: one n² array instead of four (8192²: GBs)
+    r = np.sqrt((x * dx + dx / 2 - cx_m) ** 2 + (y * dx + dx / 2 - cy_m) ** 2)
     z = floor + np.maximum(0, r - r_m) * 2.2 + np.maximum(0, r_m - r) * 0.02
     return softmin(h, z, rim_soft)
 
@@ -70,11 +81,17 @@ def coast(h, dx, style, retreat, rng, face=5.0, platform=-4.0, stacks=60, stack_
     while low valley mouths keep their beaches. Stacks: pillars of the old headlands left standing on the platform."""
     n = h.shape[0]
     sea = open_sea_mask(h)
-    d = ndimage.distance_transform_edt(~sea) * dx                    # metres inland from the old shore
+    d = ndimage.distance_transform_edt(~sea)                         # metres inland from the old shore
+    del sea
+    d *= dx
     R = retreat * style
-    allowed = platform + face * np.maximum(0, d - R)
+    allowed = d - R                                  # = platform + face·max(0, d − R), in place (8192²: 0.5 GB a grid)
+    np.maximum(allowed, 0, out=allowed); allowed *= face; allowed += platform
     cut = softmin(h, allowed, 6.0)
-    out = np.where(style > 0.02, h + (cut - h) * np.clip(style * 3, 0, 1), h)
+    del allowed
+    cut -= h; cut *= np.clip(style * 3, 0, 1); cut += h                  # = h + (cut − h)·clip(3·style)
+    out = np.where(style > 0.02, cut, h)
+    del cut
     # stacks
     sites = []
     if stacks:
@@ -82,7 +99,7 @@ def coast(h, dx, style, retreat, rng, face=5.0, platform=-4.0, stacks=60, stack_
         cand = np.argwhere((d > 20) & (d < np.maximum(R - 20, 0)) & (ss > 0.5) & (h > 25))
         if len(cand):
             pick = cand[rng.choice(len(cand), size=min(stacks * 8, len(cand)), replace=False)]
-            y, x = np.mgrid[0:n, 0:n]
+            y, x = np.ogrid[0:n, 0:n]
             for cy, cx in pick:
                 if len(sites) >= stacks:
                     break
@@ -93,7 +110,7 @@ def coast(h, dx, style, retreat, rng, face=5.0, platform=-4.0, stacks=60, stack_
                 top = h[cy, cx] * rng.uniform(0.45, 0.95)
                 r0 = max(1, int(rad * 2.5))
                 y0, y1, x0, x1 = max(cy - r0, 0), min(cy + r0 + 1, n), max(cx - r0, 0), min(cx + r0 + 1, n)
-                rr = np.sqrt((y[y0:y1, x0:x1] - cy) ** 2 + (x[y0:y1, x0:x1] - cx) ** 2) / rad
+                rr = np.sqrt((y[y0:y1] - cy) ** 2 + (x[:, x0:x1] - cx) ** 2) / rad
                 prof = platform + (top - platform) * np.clip(1 - rr ** 6, 0, 1)
                 out[y0:y1, x0:x1] = np.maximum(out[y0:y1, x0:x1], prof)
     return out, d, sites
@@ -120,7 +137,7 @@ def fans(h, dx, A, floor_mask, d_floor, rng, amin=2.5e5, spacing=500.0, maxn=80)
         return h, []
     order = np.argsort(-A[cand[:, 0], cand[:, 1]])
     sites = []
-    y, x = np.mgrid[0:n, 0:n]
+    y, x = np.ogrid[0:n, 0:n]
     out = h.copy()
     for k in order:
         cy, cx = cand[k]
@@ -134,7 +151,7 @@ def fans(h, dx, A, floor_mask, d_floor, rng, amin=2.5e5, spacing=500.0, maxn=80)
         slope = H / R
         r0 = int(R / dx) + 2
         y0, y1, x0, x1 = max(cy - r0, 0), min(cy + r0 + 1, n), max(cx - r0, 0), min(cx + r0 + 1, n)
-        rr = np.sqrt((y[y0:y1, x0:x1] - cy) ** 2 + (x[y0:y1, x0:x1] - cx) ** 2) * dx
+        rr = np.sqrt((y[y0:y1] - cy) ** 2 + (x[:, x0:x1] - cx) ** 2) * dx
         fl = h[y0:y1, x0:x1][floor_mask[y0:y1, x0:x1]]
         if not fl.size:
             continue
@@ -228,12 +245,16 @@ def beds(h, dx, weight, warp, step=30.0, cliff=0.32):
     gentle undulation of the beds; weight: where to apply (0..1)."""
     b = h + warp
     t = b / step
+    del b
     f = t - np.floor(t)
     # soft rock: benches (the profile rises only a little); hard cap: the last `cliff` of each bed rises steeply
     g = 0.18 * np.clip(f / (1 - cliff), 0, 1) + 0.82 * np.clip((f - (1 - cliff)) / cliff, 0, 1) ** 0.7
+    del f
     ht = (np.floor(t) + g) * step - warp
+    del t, g
     gy, gx = np.gradient(h, dx)
     slope = np.sqrt(gx * gx + gy * gy)
+    del gy, gx
     w = weight * np.clip((slope - 0.06) / 0.2, 0, 1)
     return h + (ht - h) * w
 

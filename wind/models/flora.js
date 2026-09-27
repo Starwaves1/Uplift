@@ -1456,9 +1456,11 @@ float impShadow(vec3 rel, float rh){
 void main(){
   if (bayer4(gl_FragCoord.xy) < vLo) discard;       // the mesh LOD draws the rest of the cross-fade
   if (uShadowPass > 0.5) { if (texture(uIA, vUV0).a < 0.5) discard; o = vec4(0.0); return; }
-  vec4 A = texture(uIA, vUV0)*vW.x + texture(uIA, vUV1)*vW.y + texture(uIA, vUV2)*vW.z;
+  // a sharper mip near the meshes' handoff (the frames' blend and the mip chain soften what the mid LOD draws crisply)
+  float mb = -0.7*(1.0 - smoothstep(400.0, 1200.0, length(vRel)));
+  vec4 A = texture(uIA, vUV0, mb)*vW.x + texture(uIA, vUV1, mb)*vW.y + texture(uIA, vUV2, mb)*vW.z;
   if (A.a < (uA2C < 0.5 ? 0.5 : 0.02)) discard;
-  vec4 N = texture(uIN, vUV0)*vW.x + texture(uIN, vUV1)*vW.y + texture(uIN, vUV2)*vW.z;
+  vec4 N = texture(uIN, vUV0, mb)*vW.x + texture(uIN, vUV1, mb)*vW.y + texture(uIN, vUV2, mb)*vW.z;
   vec3 col = pow(A.rgb/A.a, vec3(1.0/2.2)), nl = normalize(N.rgb/A.a*2.0 - 1.0); // back to the authored (sRGB) colour
   float ao = N.a/A.a, c = vRotT.x, s = vRotT.y, tint = vRotT.z;
   vec3 n = vec3(nl.x*c + nl.z*s, nl.y, -nl.x*s + nl.z*c);

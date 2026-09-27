@@ -307,7 +307,10 @@ function terrainDetail(x, z, minWave, hx) {
       const zl = (h + dx * x + dz * z) / bed, s = zl + 0.35 * (vn(zl * 0.43 + 3.7, 0.5) - 0.5), fl = Math.floor(s), f = s - fl;
       const thr = 0.3 + 0.4 * hash2(fl, 9173), hard = 0.35 + 0.65 * hash2(fl + 7, 331);
       const lat = 0.3 + 0.7 * ss(0.3, 0.7, vn(x / 97 + 1.3, z / 97 + 7.9));
-      d += ledge * w * bed * hard * lat * (ss(thr - 0.15, thr + 0.15, f) - f);
+      // the riser at least two mesh spacings wide (a sharper step would fall between the vertices), and never so wide
+      // that it spills into the next bed
+      const hw = Math.min(Math.max(0.15, minWave / P), thr, 1 - thr);
+      d += ledge * w * bed * hard * lat * (ss(thr - hw, thr + hw, f) - f);
     }
   }
   return d;
@@ -566,7 +569,8 @@ float terrainDetail(vec2 q, float minWave, float hc, vec4 nb){
       float zl = (hc + dip.x*q.x + dip.y*q.y)/bed, s = zl + 0.35*(vn(vec2(zl*0.43 + 3.7, 0.5)) - 0.5), fl = floor(s), f = s - fl;
       float thr = 0.3 + 0.4*hash2(ivec2(int(fl), 9173)), hard = 0.35 + 0.65*hash2(ivec2(int(fl) + 7, 331));
       float lat = 0.3 + 0.7*smoothstep(0.3, 0.7, vn(q/97.0 + vec2(1.3, 7.9)));
-      d += ledge*w*bed*hard*lat*(smoothstep(thr - 0.15, thr + 0.15, f) - f);
+      float hw = min(max(0.15, minWave/P), min(thr, 1.0 - thr));
+      d += ledge*w*bed*hard*lat*(smoothstep(thr - hw, thr + hw, f) - f);
     }
   }
   return d;

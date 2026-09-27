@@ -16,6 +16,13 @@ artifact (it was first published from another folder, so publishing without the 
   `island/preview/`. From Windows, call WSL via PowerShell (Git Bash mangles `/root/...` paths).
 - Test builds must stay muted (`window.WB_MUTE`): never play audio on the user's PC.
 
+## Rule: Garrett approves every merge to main
+
+Every subagent's work is reviewed by Garrett (the user) before it is merged to main: he flies the branch's own
+playable build (its worktree served on its own port, with `?fly&at=…` spectator links to the key spots), gives
+feedback to that agent, and approves. No merge to main without his explicit approval of that branch. Agents keep their
+preview server running after handing back, and expect review rounds.
+
 ## Investigate before concluding
 
 The most common failure mode of Opus 5.5 is low-effort diagnosis and premature conclusions. Do the opposite. Launch

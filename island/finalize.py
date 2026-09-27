@@ -1,11 +1,13 @@
 """Stage C: the shipping heightfield. Takes the stage-A landscape (N0², ~31 m), refines it to N² (8192²: 7.8 m) and applies
-everything that needs the fine grid: micro-relief, the glacial trough and its fans, the fjords, the caldera, rain-droplet
-gullies and talus, the wave-cut coast and its stacks, the sea floor. Saves the heights, the data maps and previews.
+everything that needs the fine grid: micro-relief, the glacial trough and its fans, the caldera, rain-droplet gullies
+and talus, the wave-cut coast and its stacks (sparing the fjord walls), the sea floor (keeping the fjords' glacial
+depth). Saves the heights, the data maps and previews.
 
 usage: python finalize.py tag N0 N outtag
 """
 import sys, os, time
 import numpy as np
+from scipy import ndimage
 import torch
 import torch.nn.functional as F
 import fields as fx
@@ -62,7 +64,7 @@ del Ht, Wn, gx, gy, steep, micro, knolls
 torch.cuda.empty_cache()
 lap('refined + micro-relief')
 
-# ── glacial: the great valley and its fans; the fjords ──
+# ── glacial: the great valley and its fans (the fjords come cut from glaciate.py) ──
 h, dv, Fv, Wv = passes.trough(h, dx, km(ds.VALLEY), ds.VALLEY_FLOOR, [w * 1000 for w in ds.VALLEY_WIDTH],
                               wall=0.022, power=1.5, soft=30.0, rough=g(fx.fbm(N, 40, 3, 71)) * 25, reach=4500)
 floor_mask = (dv < Wv / 2) & (dv < 4500)
@@ -110,6 +112,12 @@ cove = g(fx.fbm(N, 26, 4, 81))
 style = np.clip(0.95 * w_nord + 0.8 * w_med + 0.75 * w_volc + 0.25 * w_alp, 0, 1) * np.clip(0.75 + 0.9 * cove, 0, 1)
 del cove
 retreat = 90 + 260 * np.clip(0.5 + 0.6 * g(fx.fbm(N, 60, 3, 82)), 0, 1)
+if land0 is not None:
+    # the fjords are sheltered from the waves: where the nearest sea is a drowned glacial trough (land before the ice
+    # ages), the walls plunge straight into the water — no wave-cut platform, no cutting back
+    _, (sy, sx) = ndimage.distance_transform_edt(~passes.open_sea_mask(h), return_indices=True)
+    style = style * (1 - np.clip(ndimage.gaussian_filter(land0[sy, sx].astype(np.float32), 150 / dx) * 1.5, 0, 1))
+    del sy, sx
 h_pre_coast = h.astype(np.float32)               # (only for the rock-exposure map)
 h, dcoast, stacks = passes.coast(h, dx, style, retreat, rng, face=4.5, platform=-5.0, stacks=45)
 del style, retreat, dcoast
@@ -117,7 +125,11 @@ lap(f'coast: {len(stacks)} stacks')
 h_carved = h
 h = passes.bathymetry(h, dx, g(fx.fbm(N, 20, 4, 91)))
 if land0 is not None:
-    h = np.where(land0 & (h_carved < h), h_carved, h)
+    # the glaciers' drowned troughs keep their depth; blended across the preglacial coast over ~200 m, so the fjords'
+    # sills ramp up into the shelf instead of stepping at a line
+    kw = np.clip(ndimage.gaussian_filter(land0.astype(np.float32), 120 / dx) * 2.0 - 0.5, 0, 1)
+    h = h + kw * (np.minimum(h_carved, h) - h)
+    del kw
 del h_carved
 lap('sea floor')
 
@@ -130,6 +142,8 @@ json.dump([{'id': i, 'level': round(lv, 2), 'area': round(a), 'bbox': [int(v) fo
 lap(f'lakes: {len(lake_tab)} (largest {max([a for _, _, a, _ in lake_tab], default=0) / 1e6:.2f} km²)')
 
 np.save(f'{OUT}/h_{TOUT}_{N}.npy', h.astype(np.float32))
+if land0 is not None:
+    np.save(f'{OUT}/land0_{TOUT}_{N}.npy', land0)          # for fjordstats.py / fjordviews.py on the finished grid
 
 # ── data maps (for materials): river flow, sediment, scree, bare rock ──
 sea = passes.open_sea_mask(h)

@@ -21,16 +21,16 @@ Steer them only through climate (equilibrium line, mass balance) and rock streng
 
 **Blocked by:** 01 — Iteration harness
 
-**Status:** claimed
+**Status:** done (merged to main 2026-09-27 at Garrett's go; open items below)
 
-- [ ] Glaciation runs inside the landscape model, as a stage that can restart from a finished river-eroded landscape for fast iteration; the designed fjord lines and their carve pass are removed from the pipeline
-- [ ] At least two or three major fjords form in the Nordic north-west, each reaching 5 km or more inland, with walls rising 500–900 m at 40° or steeper near the water, a sill near the mouth and deeper basins inside
+- [x] Glaciation runs inside the landscape model, as a stage that can restart from a finished river-eroded landscape for fast iteration; the designed fjord lines and their carve pass are removed from the pipeline
+- [x] At least two or three major fjords form in the Nordic north-west, each reaching 5 km or more inland, with walls rising 500–900 m at 40° or steeper near the water, a sill near the mouth and deeper basins inside
 - [ ] Tributary troughs hang above the main fjords, cirques form at glacier heads, and truncated spurs line the main troughs
 - [ ] The uplands between the fjords survive as broad fell rather than being cut up
 - [ ] The Alpine ranges get glacial valleys and cirques at their own, higher equilibrium line; the young volcano cone stays unglaciated
 - [ ] Rivers and deltas rework the fjord heads during the interglacials, leaving flat head valleys
-- [ ] Later passes keep the fjord basins deep: the sea floor pass no longer flattens them, and no channel shows as a stripe out at sea
-- [ ] Reviewed from the air in the game at each fjord mouth and head, with screenshots, against real references (Sognefjord, Geirangerfjord, Lysefjord)
+- [x] Later passes keep the fjord basins deep: the sea floor pass no longer flattens them, and no channel shows as a stripe out at sea
+- [x] Reviewed from the air in the game at each fjord mouth and head, with screenshots, against real references (Sognefjord, Geirangerfjord, Lysefjord)
 
 ## Comments
 
@@ -59,3 +59,15 @@ Steer them only through climate (equilibrium line, mass balance) and rock streng
   e.g. take the minimum of the distance and a blurred copy of it. This belongs to ticket 06 as well.
 - Overlap with 07 (Nordic upland character): an ice cap over the Nordic highland may produce much of 07's fell,
   tarns and cirques. Re-scope 07 once this lands.
+
+- 2026-09-27, closed out: merged with the Alpine sculpting (snowfield ice, frost-cracked cirque headwalls, a fracture
+  stand-in for quarrying, snowline from ticket 28's climate.py when `ISLAND_CLIMATE` points at it). Check run fgZ
+  (fH_2048 → 1024, 12 cycles, climate.py snowline): fjords 14.0 / 11.2 / 6.8 / 6.2 km inland, sills −26 / −30 / −29 m,
+  deepest −372 m; Alpine ridges come out sharper, with arêtes and a horn (island/preview/fgZ_alp_ne.png vs fgH_alp_ne.png
+  in the worktree). Left open, for ticket 34 or a follow-up:
+  - side valleys still spaced like a comb or fishbone off the ridges;
+  - fjord mouths too wide (3–6 km);
+  - no tarns on the fell yet (the fracture stand-in is too weak);
+  - with climate.py's glacial snowline the volcano sits partly above the ELA (p50 ~900 m): check it stays bare;
+  - fracture density should come from ticket 17's rock model; the ELA switch becomes plain once climate.py merges;
+  - hanging valleys, cirques at the Nordic heads and the interglacial head deltas not yet verified.

@@ -1,4 +1,5 @@
 """Shaded-relief previews of a heightfield (for judging landforms while iterating)."""
+import os
 import numpy as np
 from PIL import Image
 
@@ -48,7 +49,7 @@ def oblique(h, dx, path, azim=210, elev=22, width=1600, height=900, z=1.0, sea=0
     import torch
     dev = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     h = np.asarray(h, float); n = h.shape[0]
-    tex = torch.tensor(np.asarray(Image.open(render(h, dx, '/tmp/_ob.png', A=A, sea=sea))).astype(np.float32) / 255, device=dev)
+    tex = torch.tensor(np.asarray(Image.open(render(h, dx, f'/tmp/_ob{os.getpid()}.png', A=A, sea=sea))).astype(np.float32) / 255, device=dev)
     H = torch.tensor(np.maximum(h, sea) * z / dx, device=dev, dtype=torch.float32)
     a = np.radians(azim)
     fwd = np.array([np.sin(a), -np.cos(a)]); right = np.array([np.cos(a), np.sin(a)])

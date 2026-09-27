@@ -28,12 +28,14 @@ h = D.np(D.h0) + D.np(fx.fbm(N, 16, 4, 51)) * 4
 RES = (1024 / N) ** 0.5
 Un, Kn0, Scn0 = D.np(D.U) * RES, D.np(D.K), D.np(D.Sc)
 Ulate = D.np(D.U_late) * RES
+late_from = D.np(D.late_from)                  # when the late block uplift starts (share of the run), per cell
 plat, strat = D.np(D.w_plateau), D.np(D.strata)
 edge = np.zeros((N, N), bool); edge[0, :] = edge[-1, :] = edge[:, 0] = edge[:, -1] = True
 edge = edge.ravel()
 rain = D.np(D.rain)
-# soil creep: rounded, soil-mantled hills in the lowlands and the Mediterranean south, crisp rock in the mountains
-kappa = 0.004 + 0.03 * D.np(D.w_med) * (1 - D.np(D.w_plateau)) + 0.02 * np.clip(1 - D.np(D.U) / 1.2e-3, 0, 1) * (1 - D.np(D.w_nord))
+# soil creep: rounded, soil-mantled hills in the lowlands and the Mediterranean south, crisp rock in the mountains;
+# frost creep and solifluction round the Nordic fell (and space its valleys wider apart)
+kappa = 0.004 + 0.03 * D.np(D.w_med) * (1 - D.np(D.w_plateau)) + 0.02 * np.clip(1 - D.np(D.U) / 1.2e-3, 0, 1) * (1 - D.np(D.w_nord)) + 0.03 * D.np(D.w_nord)
 
 # the volcano: a stratovolcano cone (concave flanks, steepening to the summit), built of resistant lava
 vr = D.np(D.volc_r)
@@ -69,7 +71,7 @@ for s in range(STEPS):
         built = True
     fixed = open_sea(h)
     Kn, Scn = rock(h)
-    Ut = Un + (Ulate if s >= int(STEPS * 0.7) else 0.0)
+    Ut = Un + np.where(s >= late_from * STEPS, Ulate, 0.0)
     A, rec = lem.step(h, fixed, N, dx, Kn, Ut, rain, dt, 0.5, Scn, 1e-3, rng.random(N * N), kappa, 10, 1.0)
     if s % 50 == 0 or s == STEPS - 1:
         print(f'step {s:4d}  t={s * dt / 1e6:5.2f} Myr  max {h.max():7.1f} m  land {100 * (h > 0).mean():4.1f}%  {time.time() - t0:6.1f}s', flush=True)

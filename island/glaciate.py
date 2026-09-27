@@ -2,13 +2,18 @@
 
 Each cycle is a glacial (the sea ~120 m lower; snow gathers above an equilibrium line that sits low over the windward
 Nordic north-west — an ice cap — higher over the Alpine ranges, only on the tallest summits in the south) followed by
-an interglacial (today's sea, rivers). Ice is routed down the landscape's own drainage (lem.ice_flux) and grinds its bed
-in proportion to sliding speed across each glacier's width (glacial.erosion), so the river valleys the ice follows turn
-into troughs, the big ones cut below sea level at the coast, and those flood as fjords when the sea comes back. Nothing
-is drawn: where the fjords form follows from the landscape and the climate. Base level during the glacials stays at the
-preglacial coastline, so ice keeps cutting cells that have gone below sea level (it is grounded there at the lowstand).
+an interglacial (today's sea, rivers). Ice is routed down its own surface (lem.ice_flux over the bed plus last step's
+ice), so thick ice spills over low divides into the deepening troughs; glaciers melt over their whole width. Their
+surface is perfectly plastic (thin near snouts and calving fronts, thick far from any margin), they slide at flux over
+width × thickness, and they grind their bed at a rate rising with the square of that speed, across each glacier's width
+(glacial.erosion): the river valleys the fast outlet glaciers follow turn into troughs cut below sea level at the coast,
+which flood as fjords when the sea comes back, while slow ice on the uplands and in the side valleys barely scours
+(fell, hanging valleys). Overdeepenings stop growing where the bed climbs out of them faster than the ice surface falls,
+so fjords keep a sill at the mouth and basins inside. Nothing is drawn: where the fjords form follows from the landscape
+and the climate. Base level during the glacials stays at the preglacial coastline: the ice calves there, and keeps
+cutting cells inland of it that have gone below sea level (it is grounded there at the lowstand).
 
-usage: python glaciate.py src_tag N out_tag [cycles]       e.g.  glaciate.py p_2048 1024 g1
+usage: python glaciate.py src_tag N out_tag [cycles]       e.g.  glaciate.py fH_2048 1024 fgH
 """
 import sys, time, os
 import numpy as np
@@ -19,7 +24,7 @@ from design import Design, L
 from paths import WORK as OUT
 
 SRC, N, TAG = sys.argv[1], int(sys.argv[2]), sys.argv[3]
-CYCLES = int(sys.argv[4]) if len(sys.argv) > 4 else 8
+CYCLES = int(sys.argv[4]) if len(sys.argv) > 4 else 12
 dx = L * 1000 / N
 PRE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'preview')
 
@@ -28,9 +33,19 @@ G_STEPS, G_DT = 10, 1000.0         # a glacial: 10 steps of 1 kyr at full ice
 I_STEPS, I_DT = 1, 1.0e4           # an interglacial: 10 kyr of rivers
 GAMMA = 0.006                      # mass balance gradient (m/yr of ice per m of height)
 BMAX, BMIN = 1.5, -6.0             # most snow a cell gathers, most ice it melts (m/yr)
-KG = 5e-5                          # bed erosion per m/yr of sliding
+KG = 1e-4                          # bed erosion per m/yr of sliding, at 100 m/yr
+L_EXP = 2.0                        # erosion ∝ sliding^L_EXP (Herman et al. 2015 found ~2.3 under Franz Josef Glacier)
 CAP = 25.0                         # most a cell may be cut in one step (m)
-SC_ICE = 0.5                       # glacier walls stand this much steeper (tan) than the rock's usual repose
+SC_ICE = 0.8                       # glacier walls stand this much steeper (tan) than the rock's usual repose
+SCOUR = 10.0                       # glacial erosion (m) that leaves a fresh rock face
+C_PLASTIC = 13.0                   # τ_b/(ρ_i g) (m) of the plastic ice surface: a basal shear stress of ~115 kPa
+QMIN = 2e3                         # least discharge (m³/yr) that counts as ice
+ICE_ROUTE = 0.9                    # ice flows down its own surface: routing sees this share of last step's ice thickness
+                                   # (a little less than all, so inside a glacier the flow keeps to its deepest line)
+SNOW_SC = 1.2                      # snow and firn cling to slopes gentler than this (tan, ~50°); steeper faces stay bare
+V_HW = 5e-3                        # headwall retreat (m/yr) where frost cracking is strongest: rock walls above the ice
+                                   # shatter at the bergschrund and the ice carries the debris away, so cirques eat back
+                                   # into the ridges (a compressed-time rate, as KG is: 12 cycles stand in for ~1 Myr)
 
 h = np.load(f'{OUT}/h_{SRC}.npy').astype(np.float64)
 if h.shape[0] != N:
@@ -41,16 +56,52 @@ h = h.ravel()
 D = Design(N)
 g = D.np
 RES = (1024 / N) ** 0.5
-U = (g(D.U) + g(D.U_late)) * RES             # the late block uplift is still going on
 K0, Sc0 = g(D.K), g(D.Sc)
 plat, strat, w_volc = g(D.w_plateau), g(D.strata), g(D.w_volc)
 w_nord, w_alp, w_med = g(D.w_nord), g(D.w_alp), g(D.w_med)
+# the plateau's late uplift is still going on; the Nordic highland's short, fast pulse is over by the ice ages (had it
+# gone on, it would have lifted the valley floors inland faster than the glaciers could cut them below the sea)
+U = (g(D.U) + g(D.U_late) * (1 - w_nord)) * RES
 rain = g(D.rain)
-kappa = 0.004 + 0.03 * w_med * (1 - plat) + 0.02 * np.clip(1 - g(D.U) / 1.2e-3, 0, 1) * (1 - w_nord)
+kappa = 0.004 + 0.03 * w_med * (1 - plat) + 0.02 * np.clip(1 - g(D.U) / 1.2e-3, 0, 1) * (1 - w_nord) + 0.03 * w_nord
 edge = np.zeros((N, N), bool); edge[0, :] = edge[-1, :] = edge[:, 0] = edge[:, -1] = True
 edge = edge.ravel()
-# the equilibrium line: low on the wet windward Nordic side, high in the dry south; the young volcano stays bare
-ELA = 320 * w_nord + 1150 * w_alp + 1700 * w_med + 1500 * plat + 3500 * w_volc
+# the ice-age climate: the glaciers' equilibrium line and the frost-cracking intensity on bare rock. From the terrain
+# through island/climate.py (orographic snow on the windward slopes, a high snowline in the lee; ticket 28) when it is
+# importable — set ISLAND_CLIMATE to its folder until it is merged — else a regional stand-in: low on the wet windward
+# Nordic side, higher over the Alpine ranges (about a third of their summit heights, as in the Alps at the last glacial
+# maximum), high in the dry south; the young volcano stays bare
+try:
+    if os.environ.get('ISLAND_CLIMATE'):
+        sys.path.append(os.environ['ISLAND_CLIMATE'])
+    import climate as CLIM
+except ImportError:
+    CLIM = None
+ELA0 = 320 * w_nord + 750 * w_alp + 1700 * w_med + 1500 * plat + 3500 * w_volc
+# the glacial maximum's climate: 10 °C colder than today (the LGM cooling of north-west Europe's coasts, 10–12 °C), and a
+# stronger north–south contrast in the sea's temperature (6 °C across the island rather than 3: the polar front pushed
+# south, cold water off the north-west, the southern sea still mild)
+GLACIAL_DT, GLACIAL_SST_GRAD = -10.0, 6.0
+
+
+def ice_age_climate(hc):
+    """(ELA m, frost 0..1) over the current terrain, flat arrays."""
+    if CLIM is not None:
+        c = CLIM.climate(hc.reshape(N, N), dx, 'glacial', wind=False, max_n=N, dT=GLACIAL_DT, sst_grad=GLACIAL_SST_GRAD)
+        return c['ela'].astype(np.float64).ravel(), c['frost'].astype(np.float64).ravel()
+    # stand-in: frost cracking at −8 … −3 °C mean annual rock temperature, in the glacial climate ~150–900 m above the ELA
+    return ELA0, np.exp(-((hc - ELA0 - 500.0) / 450.0) ** 2)
+
+
+def fracture():
+    """The granite's susceptibility to glacial quarrying (fracture density, mean 1): joint sets and fracture zones make
+    some rock far easier to pluck than its neighbours (Dühnforth et al. 2010), so ice working over it scours hollows
+    (tarns) and leaves knolls. A stand-in field until the rock model (ticket 17) supplies fracture density."""
+    f = fx.fbm(N, L * 1000 / 1600, 4, 77, gain=0.6).double().cpu().numpy().ravel()
+    return np.exp(0.55 * f * w_nord) / np.exp(0.55 ** 2 / 2 * w_nord)
+
+
+KG_REL = fracture()
 
 
 def rock(hc):
@@ -68,24 +119,47 @@ def open_sea(hc):
     return edge | np.isin(lab, ids[ids > 0]).ravel()
 
 
-def glacial_step(h, fixed, Hi):
-    hf = lem.priority_flood(h, fixed, N, 1e-3)
+R_WALL = max(1, round(190 / dx))   # how far past the ice (cells) its walls stand steeper
+
+
+def fresh_rock(ice, gcut):
+    """Glacier walls stand steeper than weathered slopes: next to the ice, and wherever the ice has scoured fresh rock
+    (they stay steep through the short interglacials — rock walls weather back over far longer times)."""
+    return ndimage.binary_dilation((ice | (gcut > SCOUR)).reshape(N, N), iterations=R_WALL).ravel()
+
+
+def slope(hc):
+    gy, gx = np.gradient(hc.reshape(N, N), dx)
+    return np.hypot(gx, gy).ravel()
+
+
+def glacial_step(h, fixed, Hi, gcut, ELA, frost):
+    hf = lem.priority_flood(h + ICE_ROUTE * Hi, fixed, N, 1e-3)     # thick ice spills over low divides into the troughs
     rec, dist = lem.receivers(hf, fixed, N, dx)
     st = lem.stack_order(rec, N)
     b = np.clip(GAMMA * (h + Hi - ELA), BMIN, BMAX) * dx * dx      # on the ice surface (last step's thickness)
     b[fixed] = 0.0
-    Q = lem.ice_flux(st, rec, b)
-    E, Hn = glacial.erosion(Q.reshape(N, N), dx, KG)
+    Q = lem.ice_flux(st, rec, b, dx)                                # melt over each glacier's width
+    S = glacial.surface(st, rec, dist, h, Q, fixed, C_PLASTIC, QMIN)
+    sl = slope(h)
+    acc = (b > 0) & (sl < SNOW_SC) & ~fixed                         # the snowfield: every slope that holds snow
+    E, Sn, Hn = glacial.erosion(Q, S, h, rec, dist, fixed, N, dx, KG, QMIN, l=L_EXP, c=C_PLASTIC,
+                                look=max(3, round(375 / dx)), acc=acc, kg_rel=KG_REL)   # adverse slope over ~375 m
     E, Hn = E.ravel(), Hn.ravel()
     ice = Hn > 5.0
-    h -= np.where(fixed, 0.0, np.minimum(E * G_DT, CAP))
+    cut = np.where(fixed, 0.0, np.minimum(E * G_DT, CAP))
+    # headwalls: bare rock standing above the ice (within reach of the bergschrund) shatters by frost and retreats
+    near = ndimage.binary_dilation(ice.reshape(N, N), iterations=R_WALL).ravel()
+    wall = near & ~ice & (sl > 0.5) & ~fixed
+    cut += np.where(wall, np.minimum(V_HW * frost * sl * G_DT, CAP), 0.0)
+    h -= cut
+    gcut += cut
     # rivers work the ice-free land (glaciated cells are left to the ice)
     A = lem.drainage_area(st, rec, dx * dx, rain)
     Kn, Scn = rock(h)
     lem.erode(h, st, rec, dist, A, np.where(ice, 0.0, Kn), np.zeros(N * N), G_DT, 0.5, fixed | ice, 1.0, dx * dx, 3)
     h += np.where(fixed, 0.0, U * G_DT)
-    near = ndimage.binary_dilation(ice.reshape(N, N), iterations=3).ravel()
-    lem.hillslope(h, fixed, N, dx, np.where(near, Scn + SC_ICE, Scn), kappa, G_DT, 10, 0.06)
+    lem.hillslope(h, fixed, N, dx, np.where(fresh_rock(ice, gcut), Scn + SC_ICE, Scn), kappa, G_DT, 10, 0.06)
     return Hn, Q, E
 
 
@@ -95,9 +169,12 @@ fixed0 = open_sea(h)                        # the preglacial sea: base level thr
 land0 = ~fixed0
 h_start = h.copy()
 Hi = np.zeros(N * N)
+gcut = np.zeros(N * N)                       # glacial erosion so far (m)
+print('climate:', 'island/climate.py (from the terrain)' if CLIM is not None else 'regional stand-in', flush=True)
 for c in range(CYCLES):
+    ELA, frost = ice_age_climate(h)             # the snowline follows the terrain as the ice reshapes it
     for s in range(G_STEPS):
-        Hi, Q, E = glacial_step(h, fixed0, Hi)
+        Hi, Q, E = glacial_step(h, fixed0, Hi, gcut, ELA, frost)
     Hmax, Qmax, Emax = Hi.copy(), Q.copy(), E.copy()
     ice = Hi > 5
     print(f'cycle {c}: ice {100 * ice[land0].mean():4.1f}% of land  thickest {Hi.max():5.0f} m  fastest cut {1000 * E.max():5.1f} mm/yr'
@@ -106,6 +183,7 @@ for c in range(CYCLES):
     for s in range(I_STEPS):
         fx_i = open_sea(h)
         Kn, Scn = rock(h)
+        Scn = np.where(fresh_rock(np.zeros(N * N, bool), gcut), Scn + SC_ICE, Scn)
         lem.step(h, fx_i, N, dx, Kn, U, rain, I_DT, 0.5, Scn, 1e-3, rng.random(N * N), kappa, 10, 1.0)
 
 H = h.reshape(N, N)
@@ -117,11 +195,12 @@ for nm, w in (('nordic', w_nord), ('alpine', w_alp), ('med', w_med), ('volcano',
 np.save(f'{OUT}/h_{TAG}_{N}.npy', H.astype(np.float32))
 np.save(f'{OUT}/land0_{TAG}_{N}.npy', land0.reshape(N, N))
 np.save(f'{OUT}/ice_{TAG}_{N}.npy', Hmax.reshape(N, N).astype(np.float32))
+np.save(f'{OUT}/gcut_{TAG}_{N}.npy', gcut.reshape(N, N).astype(np.float32))    # glacially scoured rock (materials)
 
 # previews: the last glacial maximum's ice over the landscape, then the drowned result
-preview.render(H, dx, '/tmp/_g.png')
+preview.render(H, dx, f'/tmp/_g{os.getpid()}.png')
 from PIL import Image
-im = np.asarray(Image.open('/tmp/_g.png')).astype(np.float32) / 255
+im = np.asarray(Image.open(f'/tmp/_g{os.getpid()}.png')).astype(np.float32) / 255
 a = np.clip(Hmax.reshape(N, N) / 120, 0, 1)[..., None] * 0.8
 Image.fromarray((np.clip(im * (1 - a) + np.array([0.93, 0.96, 1.0]) * a, 0, 1) * 255).astype(np.uint8)).resize((1400, 1400)).save(f'{PRE}/{TAG}_{N}_ice.png')
 A = lem.flow(h, open_sea(h), N, dx)[0].reshape(N, N)

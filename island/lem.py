@@ -193,15 +193,26 @@ def drainage_area(stack, rec, cell_area, rain):
 
 
 @njit(cache=True)
-def ice_flux(stack, rec, b):
+def ice_flux(stack, rec, b, dx=0.0, cw=1.3, wmax=3500.0):
     """Ice discharge (m³/yr) along the drainage network: every cell adds its surface mass balance b (m³/yr — snow
     accumulation above the equilibrium line, melt below it) to the ice arriving from upstream; the flux can't go below
-    zero, so a glacier ends where melt has eaten all it carries. Ice reaching base level (the sea) calves away."""
+    zero, so a glacier ends where melt has eaten all it carries. Ice reaching base level (the sea) calves away.
+
+    A glacier melts over its whole width, not just the one cell of its flow line: with dx > 0, melt on a cell that
+    carries ice is scaled by the glacier's width there (cw·Q^0.4, as in glacial.width) over the cell size. Snow needs
+    no such scaling: the cells beside a glacier route their own accumulation into it."""
     N = b.size
     Q = np.zeros(N)
     for k in range(N - 1, -1, -1):
         i = stack[k]
-        q = Q[i] + b[i]
+        bi = b[i]
+        if bi < 0.0 and dx > 0.0 and Q[i] > 0.0:
+            w = cw * Q[i] ** 0.4
+            if w > wmax:
+                w = wmax
+            if w > dx:
+                bi *= w / dx
+        q = Q[i] + bi
         if q < 0.0:
             q = 0.0
         Q[i] = q

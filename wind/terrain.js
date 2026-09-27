@@ -170,7 +170,7 @@ float shrubs(vec2 p, float s, float dens, float fp){
   vec2 v = vorF1(p/s);
   float r = 0.32 + 0.24*fract(v.y*13.7), e = max(fp/s, 0.05);
   float m = step(v.y, dens)*smoothstep(r + e, r - e, v.x);
-  return mix(m, dens*0.62, smoothstep(0.25, 0.8, fp/s));
+  return mix(m, dens*0.62, smoothstep(0.12, 0.45, fp/s));
 }
 float gliderShadow(vec3 wp){
   if (uSun.y < 0.05) return 0.0;
@@ -257,7 +257,8 @@ void main(){
       vec2 p = wp.xz;
       // patches at three scales: what breaks up a hillside seen from the air
       float pch = vn(p/9.0 + vec2(3.1, 0.4))*0.4 + vn(p/33.0 + vec2(7.7, 2.6))*0.35 + vn(p/140.0 + vec2(1.9, 5.3))*0.25;
-      float wf = nord, wa = alp + med*moist*0.35, wd = med*(1.0 - moist*0.35) + plat, wv = volc;
+      float hiG = smoothstep(850.0, 1350.0, alt);                    // the maquis gives way to alpine turf higher up
+      float wf = nord, wa = alp + (med*moist*0.35 + (med*(1.0 - moist*0.35) + plat)*hiG), wd = (med*(1.0 - moist*0.35) + plat)*(1.0 - hiG), wv = volc;
       float s = wf + wa + wd + wv + 1e-4; wf /= s; wa /= s; wd /= s; wv /= s;
       if (wf > 0.02) {           // Nordic fell: heath and moss, broken by ice-scoured granite slabs on every knoll
         float slab = smoothstep(0.55, 0.78, pch + ridgeC*0.35 + slope*0.5 - hollow*0.35);
@@ -274,8 +275,9 @@ void main(){
         if (stony > 0.02) { matTop(L_BROKEN, p, 1.0, a, g, h); ADDL(wMeadow*wa*stony) }
       }
       if (wd > 0.02) {           // Mediterranean garrigue: pale stony ground dotted with maquis; karst pavement on the plateau
-        if (plat > 0.5) { matTop(L_KARST, p, 6.0, a, g, h); a = lumi(a)*vec3(1.04, 1.0, 0.9)*1.15; }
-        else { matTop(L_DRY, p, 1.0, a, g, h); a = mix(a, lumi(a)*vec3(1.1, 1.0, 0.8), 0.55); }      // pale buff limestone ground
+        matTop(L_DRY, p, 1.0, a, g, h); a = mix(a, lumi(a)*vec3(1.1, 1.0, 0.8), 0.55);                // pale buff limestone ground
+        float pave = plat*smoothstep(0.55, 0.75, pch + ridgeC*0.3);    // on the causse: bare pavement on the swells
+        if (pave > 0.02) { vec3 a2; vec2 g2; float h2; matTop(L_KARST, p, 6.0, a2, g2, h2); a = mix(a, lumi(a2)*vec3(1.02, 1.0, 0.92)*0.62, pave); h = mix(h, h2, pave); g = mix(g, g2, pave); }
         // the maquis: single shrubs (~4 m apart) and bigger bushes (~9 m), thick in gullies and on shaded slopes, sparse
         // on sunny ridges, each with its short shadow thrown away from the sun
         float dens = smoothstep(0.05, 0.62,vn(p/33.0 + vec2(7.7, 2.6))*0.55 + vn(p/140.0 + vec2(1.9, 5.3))*0.45 + moist*0.35 + shaded*0.22 - 0.2 - plat*0.25);
@@ -309,9 +311,18 @@ void main(){
     if (wRock > 0.01) {
       vec3 ra = vec3(0.0); vec2 rgr = vec2(0.0); float rh = 0.0;
       if (wall < 0.99) { matTop(volc > 0.5 ? L_BROKEN : L_GRANITE, wp.xz, 1.0, a, g, h); ra = a*(1.0 - wall); rgr = g*(1.0 - wall); rh = h*(1.0 - wall); }
-      if (wall > 0.01) { matTri(med + plat > 0.5 ? L_PALE : L_FACE, wp, n, 6.0, a, triN, h); ra += a*wall; rh += h*wall; }
+      if (wall > 0.01) {         // faces: two scans at different scales, swapped by a slow noise, so no tile repeats up a wall
+        bool lime = med + plat > 0.5;
+        vec3 a2, n2; float h2;
+        matTri(lime ? L_PALE : L_FACE, wp, n, lime ? 14.0 : 7.0, a, triN, h);
+        matTri(L_FACE, wp + 41.3, n, lime ? 11.0 : 17.0, a2, n2, h2);
+        float sw = smoothstep(0.35, 0.65, vn(wp.xz/70.0 + wp.y/45.0 + vec2(2.9, 6.1)) + (h2 - h)*0.4);
+        a = mix(a, a2, sw); triN = normalize(mix(triN, n2, sw)); h = mix(h, h2, sw);
+        ra += a*wall; rh += h*wall;
+      }
       float lg = lumi(ra);
-      a = mix(ra, lg*vec3(0.95, 0.98, 1.02), 0.6)*(nord + alp) + lg*vec3(1.1, 1.03, 0.9)*1.35*(med + plat) + lg*vec3(0.6, 0.58, 0.57)*volc;
+      // recoloured by region, keeping some of each scan's own streaks and stains
+      a = mix(ra, lg*vec3(0.95, 0.98, 1.02), 0.6)*(nord + alp) + mix(ra, lg*vec3(1.08, 1.02, 0.92)*1.1, 0.5)*(med + plat) + lg*vec3(0.6, 0.58, 0.57)*volc;
       g = rgr; h = rh;                                                  // the faces' relief is in triN
       ADDL(wRock)
     }

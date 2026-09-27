@@ -22,7 +22,10 @@ R.ready = async () => {
   await R.pump(10);
   return { materials: TERRAIN.materials, mode: document.body.dataset.mode, stalled: q.length === 0 };
 };
+// without pointer lock (a hidden page never gets it) the game steers by the mouse's position: centre it = hands off
+R.centre = () => window.dispatchEvent(new MouseEvent('mousemove', { clientX: innerWidth / 2, clientY: innerHeight / 2 }));
 R.view = async (xk, yk, deg, agl, frames = 120) => {
+  R.centre();
   FLIGHT.spawn(xk * 1000 - 32000, yk * 1000 - 32000, deg * Math.PI / 180, agl);
   FLIGHT.g.invuln = 99;
   await R.pump(frames);

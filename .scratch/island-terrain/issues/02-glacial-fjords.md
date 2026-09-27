@@ -21,7 +21,7 @@ Steer them only through climate (equilibrium line, mass balance) and rock streng
 
 **Blocked by:** 01 — Iteration harness
 
-**Status:** ready-for-agent
+**Status:** claimed
 
 - [ ] Glaciation runs inside the landscape model, as a stage that can restart from a finished river-eroded landscape for fast iteration; the designed fjord lines and their carve pass are removed from the pipeline
 - [ ] At least two or three major fjords form in the Nordic north-west, each reaching 5 km or more inland, with walls rising 500–900 m at 40° or steeper near the water, a sill near the mouth and deeper basins inside

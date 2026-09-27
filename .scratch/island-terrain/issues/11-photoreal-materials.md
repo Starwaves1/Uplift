@@ -17,7 +17,7 @@ macro variation, so nothing tiles visibly from any height.
 
 **Blocked by:** None — can start immediately.
 
-**Status:** ready-for-agent
+**Status:** claimed
 
 - [x] The user approved downloading the 18 CC0 Poly Haven sets at 4K (about 742 MB of sources): aerial_rocks_02, aerial_rocks_04, rocky_terrain_02, rock_face_03, rock_06, sandstone_cracks, rocks_ground_02, gravelly_sand, aerial_grass_rock, leafy_grass, aerial_ground_rock, forest_leaves_02, brown_mud_dry, red_laterite_soil_stones, aerial_beach_01, coast_sand_rocks_02, snow_field_aerial, snow_02
 - [ ] Sources are processed on the GPU into shipped texture arrays (colour, normal, roughness/AO/height) of about 25–35 MB total

@@ -8,7 +8,7 @@ volcano's skirt.
 
 **Blocked by:** 01 — Iteration harness
 
-**Status:** ready-for-agent
+**Status:** claimed
 
 - [ ] Flying up the great valley from its mouth, the valley stays walled on both sides until its head
 - [ ] A clear rock step and a pass mark the head, with the volcano and its lake revealed beyond

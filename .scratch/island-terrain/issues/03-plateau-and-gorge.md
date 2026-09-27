@@ -7,7 +7,7 @@ floor, and ends at the sea as a calanque (a narrow sea inlet between white cliff
 
 **Blocked by:** 01 — Iteration harness
 
-**Status:** ready-for-agent
+**Status:** claimed
 
 - [ ] The plateau top is broad and mostly flat (gentle karst undulation), clearly higher than the country around it
 - [ ] The main gorge is a designed winding line, 300–500 m deep, rim-to-rim about 0.6–1.5 km, walls stepped by flat-lying beds

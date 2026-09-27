@@ -224,24 +224,24 @@ function gullyOct(px, pz, tx, tz, o) {
   g[0] = sc * m; g[1] = ssn * m; g[2] = sa / sw;
   return g;
 }
-// one octave of ice-scoured knobs: rounded bosses of granite on a jittered lattice, streamlined along the ice's flow
-// (ax, az: unit, down-glacier), long and smooth on the side the ice came from, steep where it plucked the lee; their
-// union (1 − Π(1 − dome)) → height 0…1
+// one octave of ice-scoured knobs: packed bosses of granite, one per cell of a jittered lattice, each its own height and
+// length, streamlined along the ice's flow (ax, az: unit, down-glacier): long and smooth on the side the ice came from,
+// steep where it plucked the lee. The surface is the highest boss at each point (a smooth maximum of the best two, so
+// the hollows between are soft creases), with flat floors where the hollows go deep (bogs and lochans) → height 0…~1.2
 function knobOct(px, pz, ax, az, o) {
   const ix = Math.floor(px), iz = Math.floor(pz), fx = px - ix, fz = pz - iz, so = 104729 + 7919 * o;
-  let u1 = 1;
+  let v1 = -9, v2 = -9;
   for (let j = -1; j <= 1; j++) for (let i = -1; i <= 1; i++) {
     const hh = hash2u(ix + i, iz + j + so);
     const ox = fx - i - 0.2 - 0.6 * ((hh & 255) / 255), oz = fz - j - 0.2 - 0.6 * (((hh >>> 8) & 255) / 255);
     let u = ox * ax + oz * az;
     const v = oz * ax - ox * az;
-    u *= u > 0 ? 1.6 : 0.8;
-    const hk = ((hh >>> 16) & 255) / 255, rr = 0.45 + 0.4 * hk, d2 = (u * u + v * v * 1.4) / (rr * rr);
-    if (d2 >= 1) continue;
-    const k = 1 - d2;
-    u1 *= 1 - (0.35 + 0.65 * hk) * k * k;
+    u *= u > 0 ? 1.8 : 0.7;
+    const el = 1.5 + 1.5 * (((hh >>> 16) & 255) / 255), val = 0.2 + 0.8 * ((hh >>> 24) / 255) - 1.6 * (u * u + v * v * el);
+    if (val > v1) { v2 = v1; v1 = val; } else if (val > v2) v2 = val;
   }
-  return 1 - u1;
+  const s = Math.max(0.35 - (v1 - v2), 0) / 0.35;
+  return Math.max(v1 + s * s * 0.0875, 0);
 }
 // the detail height (m) at (x, z) for a mesh filtered at minWave (m); hx = islandHCross(x, z)
 function terrainDetail(x, z, minWave, hx) {
@@ -262,7 +262,8 @@ function terrainDetail(x, z, minWave, hx) {
   // gullies and rills. r: the coarser relief's shape here, −1 in a hollow or gully … +1 on a spur or rib — each octave is
   // drawn toward it where it's strong, so gully floors and crests stay clean and the detail gathers on the flanks.
   // (fx, fz): the coarser grooves' flank direction, which bends the finer ones into them
-  const amp = gully * ss(0.05, 1.0, sl) * calm;
+  // gullied slopes come in patches (a few hundred metres), with smoother stretches of hillside between
+  const amp = gully * ss(0.05, 1.0, sl) * calm * (0.4 + 0.6 * ss(0.3, 0.7, vn(x / 170 + 4.1, z / 170 + 8.3)));
   if (amp > 0) {
     let r = Math.min(Math.max(-lap * 20, -1), 1), fx = 0, fz = 0, a = 1;
     const ux = gx / (sl + 1e-6), uz = gz / (sl + 1e-6);
@@ -275,7 +276,7 @@ function terrainDetail(x, z, minWave, hx) {
       const tx = -Gz / l, tz = Gx / l, g = gullyOct(x / c, z / c, tx, tz, o), k = 0.4 * r * r;
       const v = g[0] + (r - g[0]) * k, dep = 0.3 + 0.7 * g[2];
       // V-shaped gullies, rounded ribs: ~2|cos(θ/2)| − 4/π (zero mean)
-      d += ss(minWave, 2 * minWave, c) * amp * c * 0.25 * a * dep * (2 * Math.sqrt(Math.max(0.5 + 0.5 * v, 0) + 0.03) - 1.355);
+      d += ss(minWave, 2 * minWave, c) * amp * c * 0.35 * a * dep * (2 * Math.sqrt(Math.max(0.5 + 0.5 * v, 0) + 0.03) - 1.355);
       const fl = a * dep * (1 - k) * g[1];
       fx += fl * tx; fz += fl * tz;
       r = v; a *= o < 2 ? 0.55 : 0.8;
@@ -283,13 +284,14 @@ function terrainDetail(x, z, minWave, hx) {
   }
   // knobs: the Nordic granite, scoured by the ice sheet into rounded bosses with hollows between (flats too: knock-and-
   // lochan country), streamlined the way the ice flowed: out from the highlands to the north-west coast
-  const knob = nord * (1 - ss(0.9, 1.5, sl)) * calm;
+  // bare knobby bedrock in patches, smoother till-covered ground between
+  const knob = nord * (1 - ss(0.9, 1.5, sl)) * calm * (0.25 + 0.75 * ss(0.35, 0.65, vn(x / 260 + 2.3, z / 260 + 6.7)));
   if (knob > 0) {
     let a = 1;
     for (let o = 0; o < 6; o++) {
       const c = T.c0 * Math.pow(2, -o);
       if (c <= minWave) break;
-      d += ss(minWave, 2 * minWave, c) * knob * c * 0.16 * a * (knobOct(x / c, z / c, -0.78, -0.625, o) - 0.26);
+      d += ss(minWave, 2 * minWave, c) * knob * c * 0.24 * a * (knobOct(x / c, z / c, -0.78, -0.625, o) - 0.26);
       a *= 0.45;
     }
   }
@@ -501,22 +503,21 @@ vec3 gullyOct(vec2 p, vec2 t, int o){
   float m = 1.0/sqrt(sc*sc + sn*sn + 0.01*sw*sw);
   return vec3(sc*m, sn*m, sa/sw);
 }
-// one octave of ice-scoured knobs (a: unit, down-glacier) → height 0…1
+// one octave of ice-scoured knobs (a: unit, down-glacier) → height 0…~1.2
 float knobOct(vec2 p, vec2 a, int o){
   vec2 ip = floor(p), f = p - ip;
   ivec2 b = ivec2(ip); int so = 104729 + 7919*o;
-  float u1 = 1.0;
+  float v1 = -9.0, v2 = -9.0;
   for (int j = -1; j <= 1; j++) for (int i = -1; i <= 1; i++) {
     uint hh = hash2u(b + ivec2(i, j + so));
     vec2 of = vec2(f.x - float(i) - 0.2 - 0.6*(float(hh & 255u)/255.0), f.y - float(j) - 0.2 - 0.6*(float((hh >> 8u) & 255u)/255.0));
     float u = of.x*a.x + of.y*a.y, v = of.y*a.x - of.x*a.y;
-    u *= u > 0.0 ? 1.6 : 0.8;
-    float hk = float((hh >> 16u) & 255u)/255.0, rr = 0.45 + 0.4*hk, d2 = (u*u + v*v*1.4)/(rr*rr);
-    if (d2 >= 1.0) continue;
-    float k = 1.0 - d2;
-    u1 *= 1.0 - (0.35 + 0.65*hk)*k*k;
+    u *= u > 0.0 ? 1.8 : 0.7;
+    float el = 1.5 + 1.5*(float((hh >> 16u) & 255u)/255.0), val = 0.2 + 0.8*(float(hh >> 24u)/255.0) - 1.6*(u*u + v*v*el);
+    if (val > v1) { v2 = v1; v1 = val; } else if (val > v2) v2 = val;
   }
-  return 1.0 - u1;
+  float s = max(0.35 - (v1 - v2), 0.0)/0.35;
+  return max(v1 + s*s*0.0875, 0.0);
 }
 // the detail height (m) at q for a mesh filtered at minWave (m); hc, nb from hmCross(q)
 float terrainDetail(vec2 q, float minWave, float hc, vec4 nb){
@@ -532,7 +533,7 @@ float terrainDetail(vec2 q, float minWave, float hc, vec4 nb){
   float gully = (0.5*nord + 0.75*med + 0.55*plat + 0.9*volc + 1.0*alp)*(1.0 - 0.5*scree);
   float branch = (0.9*nord + 0.9*med + 0.8*plat + 0.3*volc + 1.0*alp)*(1.0 - 0.8*scree);
   float d = 0.0;
-  float amp = gully*smoothstep(0.05, 1.0, sl)*calm;
+  float amp = gully*smoothstep(0.05, 1.0, sl)*calm*(0.4 + 0.6*smoothstep(0.3, 0.7, vn(q/170.0 + vec2(4.1, 8.3))));
   if (amp > 0.0) {
     float r = clamp(-lap*20.0, -1.0, 1.0), a = 1.0; vec2 fl = vec2(0.0), u = g/(sl + 1e-6);
     for (int o = 0; o < 6; o++) {
@@ -541,18 +542,18 @@ float terrainDetail(vec2 q, float minWave, float hc, vec4 nb){
       vec2 G = g + 2.0*branch*sl*(fl - dot(fl, u)*u); float l = sqrt(dot(G, G) + 1e-4);
       vec2 t = vec2(-G.y, G.x)/l; vec3 gv = gullyOct(q/c, t, o); float k = 0.4*r*r;
       float v = gv.x + (r - gv.x)*k, dep = 0.3 + 0.7*gv.z;
-      d += smoothstep(minWave, 2.0*minWave, c)*amp*c*0.25*a*dep*(2.0*sqrt(max(0.5 + 0.5*v, 0.0) + 0.03) - 1.355);
+      d += smoothstep(minWave, 2.0*minWave, c)*amp*c*0.35*a*dep*(2.0*sqrt(max(0.5 + 0.5*v, 0.0) + 0.03) - 1.355);
       fl += a*dep*(1.0 - k)*gv.y*t;
       r = v; a *= o < 2 ? 0.55 : 0.8;
     }
   }
-  float knob = nord*(1.0 - smoothstep(0.9, 1.5, sl))*calm;
+  float knob = nord*(1.0 - smoothstep(0.9, 1.5, sl))*calm*(0.25 + 0.75*smoothstep(0.35, 0.65, vn(q/260.0 + vec2(2.3, 6.7))));
   if (knob > 0.0) {
     float a = 1.0;
     for (int o = 0; o < 6; o++) {
       float c = c0*exp2(-float(o));
       if (c <= minWave) break;
-      d += smoothstep(minWave, 2.0*minWave, c)*knob*c*0.16*a*(knobOct(q/c, vec2(-0.78, -0.625), o) - 0.26);
+      d += smoothstep(minWave, 2.0*minWave, c)*knob*c*0.24*a*(knobOct(q/c, vec2(-0.78, -0.625), o) - 0.26);
       a *= 0.45;
     }
   }
@@ -608,7 +609,7 @@ vec3 terrainDetailFrag(vec2 q, vec3 n, float geoWave, float fp, vec4 maps, vec4 
   float scree = maps.z, calm = (1.0 - smoothstep(0.35, 0.85, maps.y))*(1.0 - smoothstep(0.3, 0.65, maps.x));
   float gully = (0.5*nord + 0.75*med + 0.55*plat + 0.9*volc + 1.0*alp)*(1.0 - 0.5*scree);
   float branch = (0.9*nord + 0.9*med + 0.8*plat + 0.3*volc + 1.0*alp)*(1.0 - 0.8*scree);
-  float amp = gully*smoothstep(0.05, 1.0, sl)*calm, geo = max(geoWave, TDET_MINWAVE), c0 = tdetC0(), a = 1.0, sw = 1e-4;
+  float amp = gully*smoothstep(0.05, 1.0, sl)*calm*(0.4 + 0.6*smoothstep(0.3, 0.7, vn(q/170.0 + vec2(4.1, 8.3)))), geo = max(geoWave, TDET_MINWAVE), c0 = tdetC0(), a = 1.0, sw = 1e-4;
   vec3 res = vec3(0.0); vec2 fl = vec2(0.0), u = g/(sl + 1e-6);
   if (amp <= 0.0) return res;
   for (int o = 0; o < 8; o++) {
@@ -621,7 +622,7 @@ vec3 terrainDetailFrag(vec2 q, vec3 n, float geoWave, float fp, vec4 maps, vec4 
       vec2 t = vec2(-G.y, G.x)/l; vec3 gv = c > TDET_MINWAVE ? gullyOct(q/c, t, o) : vec3(rillOct(q/c, t, o), 0.5);
       // the V's kink rounded to the pixel, so a groove's floor never flips the slope inside one pixel
       float dep = 0.3 + 0.7*gv.z, s0 = sqrt(max(0.5 + 0.5*gv.x, 0.0) + 0.03 + 22.0*(fp/c)*(fp/c)), w = wg*wp;
-      res.xy += w*amp*c*0.25*a*dep*(0.5/s0)*(6.2831853*gv.y/c)*t;
+      res.xy += w*amp*c*0.35*a*dep*(0.5/s0)*(6.2831853*gv.y/c)*t;
       res.z += w*a*(2.0*s0 - 1.355); sw += w*a;
       fl += a*dep*gv.y*t;
     }

@@ -12,7 +12,7 @@ the later building pass only has to place assets:
 Each site gets terraces or benches cut into the slope, a flat core, and a harbour edge or quay line where there is
 water. The sites are exported as data (position, footprint, level, style) alongside the island.
 
-**Blocked by:** 02 — Designed fjords; 03 — South-east limestone plateau and gorge; 05 — Coastline pass
+**Blocked by:** 02 — Glacial fjords from the landscape model; 03 — South-east limestone plateau and gorge; 05 — Coastline pass
 
 **Status:** ready-for-agent
 

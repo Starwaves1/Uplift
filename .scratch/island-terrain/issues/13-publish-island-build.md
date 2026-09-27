@@ -4,7 +4,7 @@
 material textures as supporting files next to the page. Check that the whole thing fits the artifact's size limits,
 and refresh the downloadable source zip so it includes the generator.
 
-**Blocked by:** 02 — Designed fjords; 03 — South-east limestone plateau and gorge; 05 — Coastline pass; 06 — Sea floor;
+**Blocked by:** 02 — Glacial fjords from the landscape model; 03 — South-east limestone plateau and gorge; 05 — Coastline pass; 06 — Sea floor;
 11 — Photoreal ground materials
 
 **Status:** ready-for-agent

@@ -113,13 +113,28 @@
   let mode = 'title', paused = false, camMode = 'fp', locked = false, absMode = false, hudOn = true;
   const stick = [0, 0];
   let seeds = 0, drift = [0, 0, 0], veil = 0, lastCrash = 0, lastRespawn = 0, wasGround = false, thermalOn = false;
-  const start = WORLD.findStart();
+  // camera bookmark: ?at=X,Y[,HEADING[,ALT]] starts (and respawns) the glider at design-grid km X east, Y south of the
+  // island's NW corner, heading in compass degrees (0 north, 90 east), ALT metres above ground
+  const at = (() => {
+    const s = new URLSearchParams(location.search).get('at');
+    if (s == null) return null;
+    const p = s.split(',').map(v => v.trim()), n = p.map(v => (v === '' ? undefined : Number.isFinite(+v) ? +v : NaN));
+    const [x, y, hd, alt] = n;
+    if (!ISLAND || p.length > 4 || x === undefined || y === undefined || n.some(Number.isNaN) || alt <= 0) {
+      console.warn(`ignoring ?at=${s}: want X,Y[,HEADING[,ALT]] (km, km, compass degrees, metres above ground)${ISLAND ? '' : ' — no island loaded'}`);
+      return null;
+    }
+    return [x * 1000 + ISLAND.origin, y * 1000 + ISLAND.origin, hd === undefined ? undefined : hd * Math.PI / 180, alt === undefined ? 130 : alt];
+  })();
+  const start = at || WORLD.findStart();
   let bestDir = 0, bestH = -1e9;
   for (let k = 0; k < 12; k++) {
     const a = k / 12 * Math.PI * 2, h = terrainH(start[0] + Math.sin(a) * 1600, start[1] - Math.cos(a) * 1600, 1);
     if (h > bestH) { bestH = h; bestDir = a; }
   }
-  FLIGHT.spawn(start[0], start[1], start.length > 2 ? start[2] : bestDir, 130);
+  const spawnAt = at ? [at[0], at[1], at[2] === undefined ? bestDir : at[2], at[3]] : [start[0], start[1], start.length > 2 ? start[2] : bestDir, 130];
+  FLIGHT.spawn(...spawnAt);
+  if (at) FLIGHT.setHome(spawnAt);
   FLIGHT.resetAutopilot();
 
   function setScreen(s) {
@@ -329,7 +344,7 @@
       lastCrash = g.events.crash; SOUND.crash();
       if (mode === 'play') note('The wind caught you. Back to the sky…', 2.2);
     }
-    if (g.events.respawn !== lastRespawn) { lastRespawn = g.events.respawn; FLIGHT.beginBlend(); }
+    if (g.events.respawn !== lastRespawn) { lastRespawn = g.events.respawn; if (!at) FLIGHT.beginBlend(); } // a bookmark respawn cuts, no sweep across the map
     if (g.onGround && !wasGround && g.contactV > 1.5) { g.onWater ? SOUND.splash() : SOUND.thud(); }
     wasGround = g.onGround;
     if (g.onGround && running) {

@@ -5,7 +5,7 @@ of 150–400 m on the outer highland coast and Mediterranean cliffs of 80–250 
 arches-to-be standing off the headlands, and beaches kept in the coves and valley mouths. Bring back the sheltered
 southern bay (around km 31 east, 53 south), which the erosion smoothed away: the future harbour town sits above it.
 
-**Blocked by:** 02 — Designed fjords
+**Blocked by:** 02 — Glacial fjords from the landscape model
 
 **Status:** ready-for-agent
 

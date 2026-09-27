@@ -31,6 +31,8 @@ const FLIGHT = (() => {
   }
   const heading = () => Math.atan2(g.f[0], -g.f[2]);
 
+  let home = null; // [x, z, yaw, agl] to respawn at after a crash (a camera bookmark), or null
+  const setHome = h => { home = h; };
   function spawn(x, z, yaw, agl) {
     g.pos[0] = x; g.pos[2] = z; g.pos[1] = groundH(x, z) + (agl || 150);
     const real = cfg.physics === 'realistic', s = real ? RS.trimV : 27;
@@ -376,8 +378,9 @@ const FLIGHT = (() => {
       g.crashT -= h;
       g.vel[0] *= 0.98; g.vel[1] *= 0.98; g.vel[2] *= 0.98;
       if (g.crashT <= 0) {
-        const yaw = heading();
-        spawn(g.pos[0] - Math.sin(yaw) * 60, g.pos[2] + Math.cos(yaw) * 60, yaw, 160);
+        // back to the bookmark if the page was opened at one (a jump, hidden by the crash veil), else just behind the crash
+        if (home) { spawn(...home); chase.pos = null; }
+        else { const yaw = heading(); spawn(g.pos[0] - Math.sin(yaw) * 60, g.pos[2] + Math.cos(yaw) * 60, yaw, 160); }
         g.events.respawn++;
       }
       return;
@@ -509,5 +512,5 @@ const FLIGHT = (() => {
   }
   function resetAutopilot() { ap.t = 0; ap.h0 = heading(); }
 
-  return { g, cam, look, cfg, RS, spawn, setMode, update, updateCamera, autopilot, resetAutopilot, beginBlend, heading, setHeading };
+  return { g, cam, look, cfg, RS, spawn, setHome, setMode, update, updateCamera, autopilot, resetAutopilot, beginBlend, heading, setHeading };
 })();

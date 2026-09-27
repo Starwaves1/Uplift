@@ -193,6 +193,25 @@ def drainage_area(stack, rec, cell_area, rain):
 
 
 @njit(cache=True)
+def ice_flux(stack, rec, b):
+    """Ice discharge (m³/yr) along the drainage network: every cell adds its surface mass balance b (m³/yr — snow
+    accumulation above the equilibrium line, melt below it) to the ice arriving from upstream; the flux can't go below
+    zero, so a glacier ends where melt has eaten all it carries. Ice reaching base level (the sea) calves away."""
+    N = b.size
+    Q = np.zeros(N)
+    for k in range(N - 1, -1, -1):
+        i = stack[k]
+        q = Q[i] + b[i]
+        if q < 0.0:
+            q = 0.0
+        Q[i] = q
+        r = rec[i]
+        if r != i:
+            Q[r] += q
+    return Q
+
+
+@njit(cache=True)
 def erode(h, stack, rec, dist, A, K, U, dt, m, fixed, G, cell_area, iters):
     """One implicit step of stream power with deposition (the ξ–q model of Davy & Lague, solved as in Yuan et al.
     2019): dh/dt = U − K A^m S + (G / A) Qs, Qs the sediment flux arriving from upstream. Rivers carry what they erode

@@ -1,4 +1,4 @@
-"""Stage C: the shipping heightfield. Takes the stage-A landscape (N0², ~31 m), refines it to N² (~15.6 m) and applies
+"""Stage C: the shipping heightfield. Takes the stage-A landscape (N0², ~31 m), refines it to N² (8192²: 7.8 m) and applies
 everything that needs the fine grid: micro-relief, the glacial trough and its fans, the fjords, the caldera, rain-droplet
 gullies and talus, the wave-cut coast and its stacks, the sea floor. Saves the heights, the data maps and previews.
 
@@ -15,9 +15,18 @@ import design as ds
 tag, N0, N, TOUT = sys.argv[1], int(sys.argv[2]), int(sys.argv[3]), sys.argv[4]
 from paths import WORK as OUT
 PRE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'preview')
+os.makedirs(PRE, exist_ok=True)
 dx0 = ds.L * 1000 / N0; dx = ds.L * 1000 / N
 t0 = time.time()
-lap = lambda s: print(f'{s:28s} {time.time() - t0:7.1f}s', flush=True)
+PEAK = [0.0]
+def lap(s):    # time; RAM now and the stage's peak (the high-water mark is reset after each stage); GPU peak so far
+    rss = [int(l.split()[1]) / 1e6 for l in open('/proc/self/status') if l.startswith(('VmRSS', 'VmHWM'))] if os.path.exists('/proc/self/status') else []
+    gpu = torch.cuda.max_memory_allocated() / 1e9 if torch.cuda.is_available() else 0
+    if len(rss) == 2:
+        PEAK[0] = max(PEAK[0], rss[0])
+        try: open('/proc/self/clear_refs', 'w').write('5')
+        except OSError: pass
+    print(f'{s:28s} {time.time() - t0:7.1f}s' + (f'   RAM {rss[1]:4.1f} GB, stage peak {rss[0]:4.1f}, run peak {PEAK[0]:4.1f}  GPU peak {gpu:4.1f} GB' if len(rss) == 2 else ''), flush=True)
 g = lambda t: t.double().cpu().numpy()
 rng = np.random.default_rng(5)
 km = lambda pts: [(x * 1000, y * 1000) for x, y in pts]
@@ -27,25 +36,40 @@ h0 = np.load(f'{OUT}/h_{tag}_{N0}.npy').astype(np.float64)
 l0 = f'{OUT}/land0_{tag}_{N0}.npy'
 land0 = (F.interpolate(torch.tensor(np.load(l0).astype(np.float32))[None, None], size=(N, N), mode='nearest')[0, 0].numpy() > 0.5) if os.path.exists(l0) else None
 
-# ── refine ──
-Ht = F.interpolate(torch.tensor(h0, device=fx.dev, dtype=torch.float32)[None, None], size=(N, N), mode='bicubic', align_corners=False)[0, 0]
-D = ds.Design(N)
-w_nord, w_med, w_volc, w_alp, w_plat = g(D.w_nord), g(D.w_med), g(D.w_volc), g(D.w_alp), g(D.w_plateau)
+# ── refine: a cubic B-spline through the landscape's samples (torch's bicubic kernel, a = −0.75, leaves a waffle of slope
+# ripples at the landscape's grid spacing — plain in the shading once the step is 4× or more) ──
+from scipy import ndimage
+Ht = torch.tensor(ndimage.zoom(h0, N / N0, order=3, mode='reflect', grid_mode=True), device=fx.dev, dtype=torch.float32)
+assert Ht.shape == (N, N)
+# the design's region weights vary over kilometres: past 4096² build them there and upsample (the design itself at
+# 8192² held ~7 GB of GPU memory for the whole run)
+D = ds.Design(min(N, 4096))
+up = (lambda t: t) if D.N == N else (lambda t: F.interpolate(t[None, None], size=(N, N), mode='bilinear', align_corners=False)[0, 0])
+Wn = up(D.w_nord)
+g32 = lambda t: t.float().cpu().numpy()        # the weights only scale things: float32 halves them (2.7 → 1.3 GB at 8192²)
+w_nord, w_med, w_volc, w_alp, w_plat = g32(Wn), g32(up(D.w_med)), g32(up(D.w_volc)), g32(up(D.w_alp)), g32(up(D.w_plateau))
+Xc, Yc = fx.coords(N, ds.L)
+volc_near = g(torch.sqrt((Xc - ds.VOLCANO[0]) ** 2 + (Yc - ds.VOLCANO[1]) ** 2)) < 2.0   # = Design's volc_r < 2 km
+del D, Xc, Yc
 # micro-relief: roughness where it's steep, calm on flats; Nordic ground gets glacially scoured knolls and hollows
 gy, gx = torch.gradient(Ht, spacing=dx)
 steep = torch.sqrt(gx * gx + gy * gy).clamp(0, 1.5)
 micro = fx.fbm(N, ds.L * 1000 / 300, 4, 7, gain=0.5)
-knolls = fx.fbm(N, ds.L * 1000 / 400, 3, 8, gain=0.55) * D.w_nord * (Ht > 60) * (1 - steep.clamp(0, 0.6) / 0.6) * 9
+knolls = fx.fbm(N, ds.L * 1000 / 400, 3, 8, gain=0.55) * Wn * (Ht > 60) * (1 - steep.clamp(0, 0.6) / 0.6) * 9
 Ht = Ht + (micro * (0.6 + 3.0 * steep) + knolls) * (Ht > 1)
 h = g(Ht)
+del Ht, Wn, gx, gy, steep, micro, knolls
+torch.cuda.empty_cache()
 lap('refined + micro-relief')
 
 # ── glacial: the great valley and its fans; the fjords ──
 h, dv, Fv, Wv = passes.trough(h, dx, km(ds.VALLEY), ds.VALLEY_FLOOR, [w * 1000 for w in ds.VALLEY_WIDTH],
                               wall=0.022, power=1.5, soft=30.0, rough=g(fx.fbm(N, 40, 3, 71)) * 25, reach=4500)
 floor_mask = (dv < Wv / 2) & (dv < 4500)
+d_floor = np.maximum(0, dv - Wv / 2)
+del dv, Fv, Wv                                    # (8192²: every float64 grid is 0.5 GB — free them as soon as done)
 lap('valley trough')
-vs = h[g(D.volc_r) < 2.0].max()
+vs = h[volc_near].max()
 h = passes.caldera(h, dx, ds.VOLCANO[0] * 1000, ds.VOLCANO[1] * 1000, 1350, vs - 430)
 lap(f'caldera (summit {vs:.0f})')
 
@@ -58,7 +82,8 @@ H = torch.tensor(h, device=fx.dev, dtype=torch.float32)
 before = H.clone()
 land = (H > 2).float()
 hard = torch.tensor(np.clip(0.55 * w_nord + 0.5 * w_volc, 0, 0.8), device=fx.dev, dtype=torch.float32)
-detail.droplets(H, dx, int(N * N * 0.8), spawn=land * (1 + 0.5 * torch.tensor(w_nord, device=fx.dev)) + 1e-4, life=64,
+sN = max(1, N // 4096)          # finer than 4096²: droplets live as far in metres (their brush stays 3 cells: finer rills)
+detail.droplets(H, dx, int(N * N * 0.8), spawn=land * (1 + 0.5 * torch.tensor(w_nord, device=fx.dev)) + 1e-4, life=64 * sN,
                 inertia=0.3, capacity=2.0, erode=0.08, deposit=0.03, evaporate=0.02, radius=3, hardness=hard)
 lap('droplets')
 dep = (H - before).clamp(min=0)
@@ -67,27 +92,33 @@ pre_t = H.clone()
 detail.talus(H, dx, talus_tan, iters=30)
 scree = (H - pre_t).clamp(min=0)
 h = g(H)
+del H, before, pre_t, land, hard, talus_tan
+torch.cuda.empty_cache()
 lap('talus')
 
 # ── fans onto the valley floor (after the rain, so they sit on top) ──
 sea = passes.open_sea_mask(h)
 fixed = (sea | np.pad(np.zeros((N - 2, N - 2), bool), 1, constant_values=True)).ravel()
 A = lem.flow(h.ravel(), fixed, N, dx)[0].reshape(N, N)
-h_before_fans = h.copy()
-h, fs = passes.fans(h, dx, A, floor_mask, np.maximum(0, dv - Wv / 2), rng)
+h_before_fans = h.astype(np.float32)             # (only for the sediment map)
+h, fs = passes.fans(h, dx, A, floor_mask, d_floor, rng)
+del A, sea, fixed, d_floor
 lap(f'fans: {len(fs)}')
 
 # ── the coast: rock faces, coves, stacks; then the sea floor ──
 cove = g(fx.fbm(N, 26, 4, 81))
 style = np.clip(0.95 * w_nord + 0.8 * w_med + 0.75 * w_volc + 0.25 * w_alp, 0, 1) * np.clip(0.75 + 0.9 * cove, 0, 1)
+del cove
 retreat = 90 + 260 * np.clip(0.5 + 0.6 * g(fx.fbm(N, 60, 3, 82)), 0, 1)
-h_pre_coast = h.copy()
+h_pre_coast = h.astype(np.float32)               # (only for the rock-exposure map)
 h, dcoast, stacks = passes.coast(h, dx, style, retreat, rng, face=4.5, platform=-5.0, stacks=45)
+del style, retreat, dcoast
 lap(f'coast: {len(stacks)} stacks')
 h_carved = h
 h = passes.bathymetry(h, dx, g(fx.fbm(N, 20, 4, 91)))
 if land0 is not None:
     h = np.where(land0 & (h_carved < h), h_carved, h)
+del h_carved
 lap('sea floor')
 
 # ── lakes: water in the closed basins (the caldera, tarns, hollows in the valley floors) ──
@@ -104,22 +135,29 @@ np.save(f'{OUT}/h_{TOUT}_{N}.npy', h.astype(np.float32))
 sea = passes.open_sea_mask(h)
 fixed = (sea | np.pad(np.zeros((N - 2, N - 2), bool), 1, constant_values=True)).ravel()
 A = lem.flow(h.ravel(), fixed, N, dx)[0].reshape(N, N)
-sed = np.clip(g(dep) / 6.0, 0, 1) * 0.6 + np.clip((h - h_before_fans) / 20, 0, 1) + floor_mask * 0.5
-gyy, gxx = np.gradient(h, dx)
-slope = np.sqrt(gxx ** 2 + gyy ** 2)
-cliff = np.clip((slope - 0.9) / 0.8, 0, 1) + np.clip((h_pre_coast - h) / 30, 0, 1) * (h > 0)
-maps = np.stack([np.clip((np.log10(np.maximum(A, 1)) - 4.0) / 4.0, 0, 1), np.clip(sed, 0, 1),
-                 np.clip(g(scree) / 3.0, 0, 1), np.clip(cliff, 0, 1)], -1)
-np.save(f'{OUT}/maps_{TOUT}_{N}.npy', (maps * 255).astype(np.uint8))
-np.save(f'{OUT}/regions_{TOUT}_{N}.npy', (np.stack([w_nord, w_med, w_plat, w_volc], -1) * 255).astype(np.uint8))
+del sea, fixed
+def u8(chans):                                    # = (np.stack(chans, -1) * 255).astype(np.uint8), a channel at a time
+    out = np.empty((N, N, len(chans)), np.uint8)
+    for k, c in enumerate(chans):
+        out[..., k] = (c() * 255).astype(np.uint8)
+    return out
+def cliff():
+    gyy, gxx = np.gradient(h, dx)
+    return np.clip(np.clip((np.sqrt(gxx ** 2 + gyy ** 2) - 0.9) / 0.8, 0, 1) + np.clip((h_pre_coast - h) / 30, 0, 1) * (h > 0), 0, 1)
+np.save(f'{OUT}/maps_{TOUT}_{N}.npy', u8([
+    lambda: np.clip((np.log10(np.maximum(A, 1)) - 4.0) / 4.0, 0, 1),
+    lambda: np.clip(np.clip(g(dep) / 6.0, 0, 1) * 0.6 + np.clip((h - h_before_fans) / 20, 0, 1) + floor_mask * 0.5, 0, 1),
+    lambda: np.clip(g(scree) / 3.0, 0, 1), cliff]))
+np.save(f'{OUT}/regions_{TOUT}_{N}.npy', u8([lambda: w_nord, lambda: w_med, lambda: w_plat, lambda: w_volc]))
 lap('maps')
 
-# ── previews ──
-preview.render(h, dx, f'{PRE}/{TOUT}_{N}_top.png', A=A, size=1600, river_min=3e6)
-c = lambda x0, y0, x1, y1: h[int(y0 * 1000 / dx):int(y1 * 1000 / dx), int(x0 * 1000 / dx):int(x1 * 1000 / dx)]
-preview.oblique(h[::2, ::2], dx * 2, f'{PRE}/{TOUT}_{N}_obl_w.png', azim=75, elev=16)
-preview.oblique(c(2, 18, 34, 50)[::2, ::2], dx * 2, f'{PRE}/{TOUT}_{N}_valley.png', azim=72, elev=12, dist=0.55, alt=0.06)
-preview.oblique(c(2, 6, 30, 34)[::2, ::2], dx * 2, f'{PRE}/{TOUT}_{N}_nordic.png', azim=140, elev=14, dist=0.6, alt=0.07)
-preview.oblique(c(14, 40, 40, 58)[::2, ::2], dx * 2, f'{PRE}/{TOUT}_{N}_south.png', azim=0, elev=14, dist=0.6, alt=0.06)
-preview.oblique(c(40, 6, 62, 28)[::2, ::2], dx * 2, f'{PRE}/{TOUT}_{N}_volcano.png', azim=300, elev=14, dist=0.6, alt=0.06)
+# ── previews (from at most 4096²: they're downsized anyway, and full-size float64 temporaries at 8192² run to GBs) ──
+ps = max(1, N // 4096); hp = h[::ps, ::ps]; dp = dx * ps
+preview.render(hp, dp, f'{PRE}/{TOUT}_{N}_top.png', A=A[::ps, ::ps], size=1600, river_min=3e6)
+c = lambda x0, y0, x1, y1: hp[int(y0 * 1000 / dp):int(y1 * 1000 / dp), int(x0 * 1000 / dp):int(x1 * 1000 / dp)]
+preview.oblique(hp[::2, ::2], dp * 2, f'{PRE}/{TOUT}_{N}_obl_w.png', azim=75, elev=16)
+preview.oblique(c(2, 18, 34, 50)[::2, ::2], dp * 2, f'{PRE}/{TOUT}_{N}_valley.png', azim=72, elev=12, dist=0.55, alt=0.06)
+preview.oblique(c(2, 6, 30, 34)[::2, ::2], dp * 2, f'{PRE}/{TOUT}_{N}_nordic.png', azim=140, elev=14, dist=0.6, alt=0.07)
+preview.oblique(c(14, 40, 40, 58)[::2, ::2], dp * 2, f'{PRE}/{TOUT}_{N}_south.png', azim=0, elev=14, dist=0.6, alt=0.06)
+preview.oblique(c(40, 6, 62, 28)[::2, ::2], dp * 2, f'{PRE}/{TOUT}_{N}_volcano.png', azim=300, elev=14, dist=0.6, alt=0.06)
 lap('done')

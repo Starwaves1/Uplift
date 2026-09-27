@@ -182,13 +182,18 @@ const mat2 MROT = mat2(0.8, 0.6, -0.6, 0.8);
 float lumi(vec3 c){ return dot(c, vec3(0.2126, 0.7152, 0.0722)); }
 // the scan's slope along its own axes from the tangent normal: (dh/du, dh/dv) with v running down the image
 vec2 tslope(vec2 rg){ vec2 t = rg*2.0 - 1.0; return vec2(-t.x, t.y)/sqrt(max(1.0 - dot(t, t), 0.09)); }
-float matFar; // per pixel, 0 near … ~0.65 far: how much the scans' own contrast has faded toward their average colour
+float matFar; // per pixel, 0 near … 0.65 far (0.6 at ~2.2 km): how far the scans' own contrast has faded toward their average
 // a layer seen from above at p (m), tiles k× their true size: linear albedo, world slope (dh/dx, dh/dz), height 0…1.
 // Two lookups — the tile, and a copy rotated ~37° and 1.37× larger — swapped every half tile or so by a noise and by
 // their own heights, so even a 15 m scan doesn't repeat as a grid; far off, the scan's contrast fades toward its average
 // (its last mip), and the broad variation laid on top carries the land instead
 void matTop(int L, vec2 p, float k, out vec3 a, out vec2 g, out float h){
   float t = TILE[L]*k, l = float(L);
+  if (matFar >= 0.6) {       // beyond ~2 km a tile is a few pixels across: one lookup, no relief
+    vec3 u = vec3(p/t, l);
+    a = mix(texture(uMatC, u).rgb, textureLod(uMatC, u, 10.0).rgb, matFar); h = texture(uMatN, u).b; g = vec2(0.0);
+    return;
+  }
   vec3 u1 = vec3(p/t, l), u2 = vec3(MROT*(p/(t*1.37)) + vec2(0.31, 0.77), l);
   vec3 n1 = texture(uMatN, u1).rgb, n2 = texture(uMatN, u2).rgb;
   float b = smoothstep(0.25, 0.75, vn(p/(t*0.61) + vec2(l*7.1, 3.3))*0.7 + vn(p/(t*2.3) + vec2(1.7, l))*0.3 + (n2.b - n1.b)*0.6);
@@ -325,7 +330,10 @@ void main(){
       }
       if (wa > 0.02) {           // alpine grass, stonier on knolls and higher up
         float stony = smoothstep(0.55, 0.8, pch + ridgeC*0.3 + slope*0.9 + smoothstep(900.0, 1700.0, alt)*0.4);
-        if (stony < 0.98) { matTop(L_ALPINE, p, 1.0, a, g, h); ADDL(wMeadow*wa*(1.0 - stony)) }
+        if (stony < 0.98) {      // the scan is sun-dried; valley floors and moist hollows keep their summer green
+          matTop(L_ALPINE, p, 1.0, a, g, h); a = mix(a, a*vec3(0.78, 1.06, 0.66), smoothstep(0.35, 0.85, moist)*0.75);
+          ADDL(wMeadow*wa*(1.0 - stony))
+        }
         if (stony > 0.02) { matTop(L_BROKEN, p, 1.0, a, g, h); ADDL(wMeadow*wa*stony) }
       }
       if (wd > 0.02) {           // Mediterranean garrigue: pale stony ground dotted with maquis; karst pavement on the plateau
@@ -354,7 +362,11 @@ void main(){
     }
     if (wScree > 0.01) { matTop(L_SCREE, wp.xz, 5.0, a, g, h); ADDL(wScree) }
     if (wShore > 0.01) {         // pale warm sand in the south, shingle and rock on the Nordic shore
-      if (nord < 0.6) { matTop(L_BEACH, wp.xz, 1.0, a, g, h); a = mix(a, lumi(a)*vec3(1.12, 1.03, 0.86), med + plat); ADDL(wShore*(1.0 - nord)) }
+      if (nord < 0.6) {          // …and black sand on the volcano's shores
+        matTop(L_BEACH, wp.xz, 1.0, a, g, h);
+        a = mix(a, lumi(a)*vec3(1.12, 1.03, 0.86), med + plat); a = mix(a, lumi(a)*vec3(0.36, 0.35, 0.35), volc);
+        ADDL(wShore*(1.0 - nord))
+      }
       if (nord > 0.02) { matTop(L_SHORE, wp.xz, 1.0, a, g, h); ADDL(wShore*nord) }
     }
     if (wGravel > 0.01) { matTop(L_GRAVEL, wp.xz, 4.0, a, g, h); a = mix(a, lumi(a)*vec3(0.95, 0.98, 1.02)*1.1, 0.6); ADDL(wGravel) }
@@ -369,9 +381,11 @@ void main(){
         bool lime = med + plat > 0.5;
         vec3 a2, n2; float h2;
         matTri(lime ? L_PALE : L_FACE, wp, n, lime ? 14.0 : 7.0, a, triN, h);
-        matTri(L_FACE, wp + 41.3, n, lime ? 11.0 : 17.0, a2, n2, h2);
-        float sw = smoothstep(0.35, 0.65, vn(wp.xz/70.0 + wp.y/45.0 + vec2(2.9, 6.1)) + (h2 - h)*0.4);
-        a = mix(a, a2, sw); triN = normalize(mix(triN, n2, sw)); h = mix(h, h2, sw);
+        if (matFar < 0.6) {      // (far off, one scan is enough)
+          matTri(L_FACE, wp + 41.3, n, lime ? 11.0 : 17.0, a2, n2, h2);
+          float sw = smoothstep(0.35, 0.65, vn(wp.xz/70.0 + wp.y/45.0 + vec2(2.9, 6.1)) + (h2 - h)*0.4);
+          a = mix(a, a2, sw); triN = normalize(mix(triN, n2, sw)); h = mix(h, h2, sw);
+        }
         ra += a*wall; rh += h*wall;
       }
       float lg = lumi(ra);

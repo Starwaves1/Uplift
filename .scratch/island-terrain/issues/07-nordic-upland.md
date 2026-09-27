@@ -7,7 +7,7 @@ fjords and troughs. Also fix the ring-shaped lowland lake near km 12 east, 23 so
 
 **Blocked by:** 02 — Glacial fjords from the landscape model
 
-**Status:** ready-for-agent
+**Status:** wontfix
 
 - [ ] Fine dendritic gullying on the Nordic upland is much reduced; the upland reads as rolling fell from 300–800 m up
 - [ ] Dozens of small tarns sit in scoured hollows (these show as lakes in the game)
@@ -21,3 +21,5 @@ fjords and troughs. Also fix the ring-shaped lowland lake near km 12 east, 23 so
 - Ticket 02 now generates the fjords from glaciations in the landscape model. An ice cap over this highland may produce
   much of the fell, tarns and cirques on its own, so re-scope this ticket once 02 lands. Its cirque criterion no longer
   names specific fjords.
+- 2026-09-26: folded into ticket 02 (approved by the user with the procedural overhaul): the ice cap over the Nordic
+  highland is to produce the fell, tarns and cirques. The ring-shaped lowland lake gets checked there too.

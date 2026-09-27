@@ -102,18 +102,20 @@ function forestMask(x, z) {
   return ss(0.54, 0.66, vn(x * 0.0021 + 7.7, z * 0.0021 + 3.3) * 0.7 + vn(x * 0.009 + 1.1, z * 0.009 + 9.9) * 0.3);
 }
 // ── the island: a baked heightfield (island.bin, decoded by boot.js into window.ISLAND_DATA) ──
-// Heights between samples are Catmull-Rom bicubic (smooth, and it keeps the ridgelines), plus a little micro-relief
-// below the grid's resolution — the same function as the GLSL terrainH(), so the ground you collide with is the ground
-// you see. Without island data (the model viewer, or a failed load) the old procedural world stands in.
+// Stored as 16-bit steps (height = q·step + offset; 8192² at 7.8 m: 128 MB here, the same again on the GPU — a float
+// copy would be twice that). Heights between samples are Catmull-Rom bicubic (smooth, and it keeps the ridgelines), plus
+// a little micro-relief below the grid's resolution — the same function as the GLSL terrainH(), so the ground you
+// collide with is the ground you see. Without island data (the model viewer, or a failed load) the old procedural world
+// stands in.
 const ISLAND = (() => {
   const D = typeof window !== 'undefined' && window.ISLAND_DATA;
   if (!D) return null;
-  const { n, dx, origin, h, size } = D;
+  const { n, dx, origin, q, step, offset, size } = D;
   // a smoothed copy (1 km cells, blurred to ~3 km) for regional questions: how mountainous is it around here?
   const m = 64, b = n / m, sm = new Float32Array(m * m);
   for (let j = 0; j < m; j++) for (let i = 0; i < m; i++) {
     let s = 0;
-    for (let y = j * b; y < (j + 1) * b; y += 4) for (let x = i * b; x < (i + 1) * b; x += 4) s += Math.max(h[y * n + x], 0);
+    for (let y = j * b; y < (j + 1) * b; y += 4) for (let x = i * b; x < (i + 1) * b; x += 4) s += Math.max(q[y * n + x] * step + offset, 0);
     sm[j * m + i] = s / ((b / 4) * (b / 4));
   }
   for (let pass = 0; pass < 3; pass++) {
@@ -128,21 +130,19 @@ const ISLAND = (() => {
       sm[j * m + i] = s / w;
     }
   }
-  return { n, dx, inv: 1 / dx, origin, size, h, sm, m, cs: size / m };
+  return { n, dx, inv: 1 / dx, origin, size, q, step, offset, sm, m, cs: size / m };
 })();
 const _cr = (p0, p1, p2, p3, t) => p1 + 0.5 * t * (p2 - p0 + t * (2 * p0 - 5 * p1 + 4 * p2 - p3 + t * (3 * (p1 - p2) + p3 - p0)));
+const _cl = (i, m) => (i < 0 ? 0 : i > m ? m : i);
+// the stored heightfield alone (m): Catmull-Rom over the 4×4 samples around (x, z), in steps, then scaled — as hmCubic()
 function islandH(x, z) {
-  const I = ISLAND, n = I.n, h = I.h;
+  const I = ISLAND, n = I.n, q = I.q, m = n - 1;
   const u = (x - I.origin) * I.inv - 0.5, v = (z - I.origin) * I.inv - 0.5;
   const iu = Math.floor(u), iv = Math.floor(v), fu = u - iu, fv = v - iv;
-  const r = [0, 0, 0, 0];
-  for (let k = 0; k < 4; k++) {
-    const y = Math.min(Math.max(iv - 1 + k, 0), n - 1) * n;
-    const x0 = Math.min(Math.max(iu - 1, 0), n - 1), x1 = Math.min(Math.max(iu, 0), n - 1);
-    const x2 = Math.min(Math.max(iu + 1, 0), n - 1), x3 = Math.min(Math.max(iu + 2, 0), n - 1);
-    r[k] = _cr(h[y + x0], h[y + x1], h[y + x2], h[y + x3], fu);
-  }
-  return _cr(r[0], r[1], r[2], r[3], fv);
+  const x0 = _cl(iu - 1, m), x1 = _cl(iu, m), x2 = _cl(iu + 1, m), x3 = _cl(iu + 2, m);
+  const y0 = _cl(iv - 1, m) * n, y1 = _cl(iv, m) * n, y2 = _cl(iv + 1, m) * n, y3 = _cl(iv + 2, m) * n;
+  return _cr(_cr(q[y0 + x0], q[y0 + x1], q[y0 + x2], q[y0 + x3], fu), _cr(q[y1 + x0], q[y1 + x1], q[y1 + x2], q[y1 + x3], fu),
+    _cr(q[y2 + x0], q[y2 + x1], q[y2 + x2], q[y2 + x3], fu), _cr(q[y3 + x0], q[y3 + x1], q[y3 + x2], q[y3 + x3], fu), fv) * I.step + I.offset;
 }
 function microH(x, z) {
   return (vn(x / 9.1 + 3.7, z / 9.1 + 1.3) - 0.5) * 1.1 + (vn(x / 3.3 + 7.1, z / 3.3 + 2.9) - 0.5) * 0.45;
@@ -251,10 +251,12 @@ float terrainHProc(vec2 q, float minWave){
 float forestMask(vec2 p){
   return smoothstep(0.54, 0.66, vn(p*0.0021 + vec2(7.7,3.3))*0.7 + vn(p*0.009 + vec2(1.1,9.9))*0.3);
 }
-// ── the island heightfield (JS twin: terrainH/islandH/microH in core.js). uHeightP: origin (m), 1/cell (1/m), cells,
-// enabled. Fine detail: Catmull-Rom bicubic over 16 texels; coarser (minWave, m): the float mip chain ──
-uniform highp sampler2D uHeight; uniform vec4 uHeightP;
-float hmF(ivec2 i){ int m = int(uHeightP.z) - 1; return texelFetch(uHeight, clamp(i, ivec2(0), ivec2(m)), 0).r; }
+// ── the island heightfield (JS twin: terrainH/islandH/microH in core.js): 16-bit steps in an R16UI texture with its
+// own mip pyramid, filtered by hand (integer textures don't filter). uHeightP: origin (m), 1/cell (1/m), cells, enabled;
+// uHeightQ: metres per step, offset (m). Fine detail: Catmull-Rom bicubic over 16 texels; coarser (minWave, m):
+// trilinear over the pyramid, as textureLod would ──
+uniform highp usampler2D uHeight; uniform vec4 uHeightP; uniform vec2 uHeightQ;
+float hmF(ivec2 i){ int m = int(uHeightP.z) - 1; return float(texelFetch(uHeight, clamp(i, ivec2(0), ivec2(m)), 0).r); }
 float crs(float p0, float p1, float p2, float p3, float t){ return p1 + 0.5*t*(p2 - p0 + t*(2.0*p0 - 5.0*p1 + 4.0*p2 - p3 + t*(3.0*(p1 - p2) + p3 - p0))); }
 float hmCubic(vec2 q){
   vec2 u = (q - uHeightP.x)*uHeightP.y - 0.5, fi = floor(u), f = u - fi;
@@ -263,7 +265,24 @@ float hmCubic(vec2 q){
   float r1 = crs(hmF(b + ivec2(-1, 0)), hmF(b + ivec2(0, 0)), hmF(b + ivec2(1, 0)), hmF(b + ivec2(2, 0)), f.x);
   float r2 = crs(hmF(b + ivec2(-1, 1)), hmF(b + ivec2(0, 1)), hmF(b + ivec2(1, 1)), hmF(b + ivec2(2, 1)), f.x);
   float r3 = crs(hmF(b + ivec2(-1, 2)), hmF(b + ivec2(0, 2)), hmF(b + ivec2(1, 2)), hmF(b + ivec2(2, 2)), f.x);
-  return crs(r0, r1, r2, r3, f.y);
+  return crs(r0, r1, r2, r3, f.y)*uHeightQ.x + uHeightQ.y;
+}
+// pyramid level l, bilinear, in steps; u in level-0 texels
+float hmBilin(vec2 u, int l){
+  vec2 t = u*exp2(-float(l)) - 0.5, fi = floor(t), f = t - fi;
+  ivec2 m = ivec2((int(uHeightP.z) >> l) - 1), a = clamp(ivec2(fi), ivec2(0), m), b = clamp(ivec2(fi) + 1, ivec2(0), m);
+  float h00 = float(texelFetch(uHeight, a, l).r), h10 = float(texelFetch(uHeight, ivec2(b.x, a.y), l).r);
+  float h01 = float(texelFetch(uHeight, ivec2(a.x, b.y), l).r), h11 = float(texelFetch(uHeight, b, l).r);
+  return mix(mix(h00, h10, f.x), mix(h01, h11, f.x), f.y);
+}
+float hmLod(vec2 q, float lod){
+  vec2 u = (q - uHeightP.x)*uHeightP.y;
+  float top = log2(uHeightP.z);
+  lod = clamp(lod, 0.0, top);
+  int l = int(lod); float t = lod - float(l);
+  float h = hmBilin(u, l);
+  if (t > 0.0) h = mix(h, hmBilin(u, min(l + 1, int(top))), t);
+  return h*uHeightQ.x + uHeightQ.y;
 }
 // the island's data maps: (river flow, sediment, scree, bare rock) and region weights (Nordic, Mediterranean, plateau,
 // volcano; the Alpine centre is what's left)
@@ -275,7 +294,7 @@ float terrainH(vec2 q, float minWave){
   if (uHeightP.w < 0.5) return terrainHProc(q, minWave);
   float texel = 1.0/uHeightP.y, h;
   if (minWave <= texel*1.5) h = hmCubic(q);
-  else h = textureLod(uHeight, (q - uHeightP.x)*uHeightP.y/uHeightP.z, log2(minWave/(texel*1.5))).r;
+  else h = hmLod(q, log2(minWave/(texel*1.5)));
   return h + microH(q)*smoothstep(0.5, 3.0, h)*(1.0 - smoothstep(4.0, 12.0, minWave));
 }
 // Lighting is scene-linear HDR. Colours authored in the code are sRGB and go through toLin() before lighting.
@@ -571,19 +590,35 @@ const GLX = (() => {
   };
   // texture units reserved for the atmosphere LUTs (bound once per frame by ATMOS)
   const UNIT_SKY = 15, UNIT_AP = 14;
-  // the island heightfield: an R32F texture with a float mip chain, bound once on its own unit
-  const UNIT_HEIGHT = 4, heightP = new Float32Array(4);
+  // the island heightfield: the 16-bit steps in an R16UI texture, bound once on its own unit, with a mip pyramid of 2×2
+  // means made here (8192²: 128 MB + 43 MB; an R32F copy with mips would be 358 MB). A GPU that can't take the full size
+  // gets the pyramid from the first level that fits (the ground then renders coarser than it collides).
+  const UNIT_HEIGHT = 4, heightP = new Float32Array(4), heightQ = new Float32Array(2);
   if (typeof ISLAND !== 'undefined' && ISLAND) {
-    gl.getExtension('OES_texture_float_linear'); gl.getExtension('EXT_color_buffer_float');
-    const t = gl.createTexture();
+    gl.getExtension('OES_texture_float_linear'); gl.getExtension('EXT_color_buffer_float'); // (other modules' float targets count on these)
+    const t = gl.createTexture(), max = gl.getParameter(gl.MAX_TEXTURE_SIZE);
     gl.activeTexture(gl.TEXTURE0 + UNIT_HEIGHT); gl.bindTexture(gl.TEXTURE_2D, t);
-    gl.texStorage2D(gl.TEXTURE_2D, Math.log2(ISLAND.n) + 1, gl.R32F, ISLAND.n, ISLAND.n);
+    let lv = ISLAND.q, s = ISLAND.n, skip = 0;
+    const halve = () => { // next pyramid level: rounded means of 2×2 steps
+      const s2 = s >> 1, d = new Uint16Array(s2 * s2);
+      for (let y = 0; y < s2; y++) for (let x = 0, a = 2 * y * s, b = a + s, o = y * s2; x < s2; x++, a += 2, b += 2) d[o + x] = (lv[a] + lv[a + 1] + lv[b] + lv[b + 1] + 2) >> 2;
+      lv = d; s = s2;
+    };
+    while (s > max) { halve(); skip++; }
+    if (skip) console.warn(`island heights: ${ISLAND.n}² is over this GPU's ${max} texture limit; rendering from ${s}²`);
+    const levels = Math.floor(Math.log2(s)) + 1;
+    gl.texStorage2D(gl.TEXTURE_2D, levels, gl.R16UI, s, s);
+    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 2);
+    for (let l = 0; l < levels; l++) {
+      if (l) halve();
+      gl.texSubImage2D(gl.TEXTURE_2D, l, 0, 0, s, s, gl.RED_INTEGER, gl.UNSIGNED_SHORT, lv);
+    }
     gl.pixelStorei(gl.UNPACK_ALIGNMENT, 4);
-    gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, ISLAND.n, ISLAND.n, gl.RED, gl.FLOAT, ISLAND.h);
-    gl.generateMipmap(gl.TEXTURE_2D);
-    for (const [k, v] of [[gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR], [gl.TEXTURE_MAG_FILTER, gl.LINEAR], [gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE], [gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE]]) gl.texParameteri(gl.TEXTURE_2D, k, v);
+    for (const [k, v] of [[gl.TEXTURE_MIN_FILTER, gl.NEAREST_MIPMAP_NEAREST], [gl.TEXTURE_MAG_FILTER, gl.NEAREST], [gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE], [gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE]]) gl.texParameteri(gl.TEXTURE_2D, k, v);
     gl.activeTexture(gl.TEXTURE0);
-    heightP.set([ISLAND.origin, ISLAND.inv, ISLAND.n, 1]);
+    const n = ISLAND.n >> skip;
+    heightP.set([ISLAND.origin, n / ISLAND.size, n, 1]);
+    heightQ.set([ISLAND.step, ISLAND.offset]);
   }
   const UNIT_MAPS = 16, UNIT_REG = 17, M = typeof window !== 'undefined' && window.ISLAND_MAPS;
   for (const [unit, n, data] of M ? [[UNIT_MAPS, M.nm, M.maps], [UNIT_REG, M.nr, M.regions]] : []) {
@@ -608,7 +643,7 @@ const GLX = (() => {
     if (u.uAtm) gl.uniform4fv(u.uAtm, env.atm);
     if (u.uSkyLut) gl.uniform1i(u.uSkyLut, UNIT_SKY);
     if (u.uApLut) gl.uniform1i(u.uApLut, UNIT_AP);
-    if (u.uHeightP) { gl.uniform4fv(u.uHeightP, heightP); if (u.uHeight) gl.uniform1i(u.uHeight, UNIT_HEIGHT); }
+    if (u.uHeightP) { gl.uniform4fv(u.uHeightP, heightP); if (u.uHeight) gl.uniform1i(u.uHeight, UNIT_HEIGHT); if (u.uHeightQ) gl.uniform2fv(u.uHeightQ, heightQ); }
     if (u.uIslMaps) gl.uniform1i(u.uIslMaps, UNIT_MAPS);
     if (u.uIslReg) gl.uniform1i(u.uIslReg, UNIT_REG);
     if (u.uShadowPass) gl.uniform1f(u.uShadowPass, env.shadowPass);

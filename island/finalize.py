@@ -1,6 +1,7 @@
 """Stage C: the shipping heightfield. Takes the stage-A landscape (N0², ~31 m), refines it to N² (~15.6 m) and applies
-everything that needs the fine grid: micro-relief, the glacial trough and its fans, the fjords, the caldera, rain-droplet
-gullies and talus, the wave-cut coast and its stacks, the sea floor. Saves the heights, the data maps and previews.
+everything that needs the fine grid: micro-relief, the glacial trough and its fans, the caldera, rain-droplet gullies
+and talus, the wave-cut coast and its stacks (sparing the fjord walls), the sea floor (keeping the fjords' glacial
+depth). Saves the heights, the data maps and previews.
 
 usage: python finalize.py tag N0 N outtag
 """
@@ -40,7 +41,7 @@ Ht = Ht + (micro * (0.6 + 3.0 * steep) + knolls) * (Ht > 1)
 h = g(Ht)
 lap('refined + micro-relief')
 
-# ── glacial: the great valley and its fans; the fjords ──
+# ── glacial: the great valley and its fans (the fjords come cut from glaciate.py) ──
 h, dv, Fv, Wv = passes.trough(h, dx, km(ds.VALLEY), ds.VALLEY_FLOOR, [w * 1000 for w in ds.VALLEY_WIDTH],
                               wall=0.022, power=1.5, soft=30.0, rough=g(fx.fbm(N, 40, 3, 71)) * 25, reach=4500)
 floor_mask = (dv < Wv / 2) & (dv < 4500)
@@ -81,6 +82,12 @@ lap(f'fans: {len(fs)}')
 cove = g(fx.fbm(N, 26, 4, 81))
 style = np.clip(0.95 * w_nord + 0.8 * w_med + 0.75 * w_volc + 0.25 * w_alp, 0, 1) * np.clip(0.75 + 0.9 * cove, 0, 1)
 retreat = 90 + 260 * np.clip(0.5 + 0.6 * g(fx.fbm(N, 60, 3, 82)), 0, 1)
+if land0 is not None:
+    # the fjords are sheltered from the waves: where the nearest sea is a drowned glacial trough (land before the ice
+    # ages), the walls plunge straight into the water — no wave-cut platform, no cutting back
+    from scipy import ndimage
+    _, (sy, sx) = ndimage.distance_transform_edt(~passes.open_sea_mask(h), return_indices=True)
+    style = style * (1 - np.clip(ndimage.gaussian_filter(land0[sy, sx].astype(np.float32), 150 / dx) * 1.5, 0, 1))
 h_pre_coast = h.copy()
 h, dcoast, stacks = passes.coast(h, dx, style, retreat, rng, face=4.5, platform=-5.0, stacks=45)
 lap(f'coast: {len(stacks)} stacks')

@@ -24,24 +24,7 @@ SOUTH_RANGE = [(10.0, 40.2), (18.0, 37.6), (26.0, 35.0), (34.0, 32.4), (41.5, 29
 VOLCANO = (51.5, 17.0)          # summit centre
 BAY = (31.0, 52.5)              # the sheltered southern bay (harbour town above it)
 COAST_RIDGE = [(17.5, 49.5), (22.5, 50.5), (27.0, 50.8)]                                             # Amalfi-style ridge, west of the bay
-
-# the Nordic fjords (thalweg from ~1 km out at sea to the head valley; floor m, floor width m per vertex). The Vestfjord
-# runs deep into the highland to the foot of the north range; the Nordfjord joins it, so the north-west block stands as an
-# island you can fly all the way around; the Austfjord is the long inlet on the east side of the highland.
-FJORDS = [
-    dict(name='Vestfjord',
-         pts=[(10.0, 17.0), (12.0, 18.2), (13.8, 19.4), (15.6, 20.4), (17.6, 20.9), (19.6, 21.5), (21.0, 22.8), (21.8, 24.5), (22.4, 26.0), (22.9, 27.2)],
-         floor=[-40, -70, -160, -220, -200, -180, -120, 2, 40, 150],
-         width=[1300, 1100, 950, 850, 800, 750, 650, 480, 360, 280]),
-    dict(name='Nordfjord',
-         pts=[(15.0, 12.4), (15.3, 15.0), (16.0, 16.9), (16.2, 18.6), (16.3, 20.4)],
-         floor=[-40, -120, -180, -160, -170],
-         width=[1000, 850, 750, 700, 750]),
-    dict(name='Austfjord',
-         pts=[(28.6, 12.4), (27.8, 15.5), (26.9, 18.0), (27.1, 20.6), (26.6, 23.0), (25.4, 25.2), (24.8, 26.4)],
-         floor=[-40, -110, -150, -140, -60, 2, 90],
-         width=[1400, 1100, 900, 800, 650, 450, 320]),
-]
+# (the Nordic fjords are not designed: glaciate.py cuts them from the landscape)
 
 LOBES = [                       # (cx, cy, rx, ry, rotation°): soft union = the land
     (32, 32, 25, 14.5, -20),     # core body, WSW–ENE
@@ -113,7 +96,6 @@ class Design:
 
         northR = ridge(NORTH_RANGE, 3.6, 0.95, 31)
         southR = ridge(SOUTH_RANGE, 3.4, 0.9, 32)
-        nordic = (0.12 + 0.08 * fx.fbm(n, 8, 4, 33)) * self.w_nord               # the old Nordic surface: low and slow before the late uplift
         coastR = ridge(COAST_RIDGE, 2.2, 0.7, 37, taper=0.2)                       # steep coastal mountains west of the bay
         med = (0.35 + 0.55 * fx.fbm(n, 7, 4, 34).clamp(-0.5, 2)) * self.w_med    # hill country, terraces
         plat = 0.0 * self.w_plateau
@@ -125,19 +107,39 @@ class Design:
         dcoast = torch.tensor(_nd.distance_transform_edt((self.P0 > 0).cpu().numpy()) * (L / n), device=fx.dev, dtype=torch.float32)
         self.dcoast = dcoast
         rim = fx.smoothstep(0.0, 0.9, dcoast) * (1 - fx.smoothstep(2.2, 6.0, dcoast))
-        rimw = (1.0 * self.w_nord + 0.75 * self.w_med * (1 - fx.smoothstep(46.0, 52.0, X)) + 0.3 * self.w_alp) * (0.55 + 0.6 * fx.fbm(n, 9, 3, 39).clamp(-0.8, 0.8))
+        rimw = (0.1 * self.w_nord + 0.75 * self.w_med * (1 - fx.smoothstep(46.0, 52.0, X)) + 0.3 * self.w_alp) * (0.55 + 0.6 * fx.fbm(n, 9, 3, 39).clamp(-0.8, 0.8))
         coastRim = 0.9 * rim * rimw.clamp(0, 1.2)
+        # the Nordic block: a highland falling steadily from the north range to the sea (as Fiordland falls from the Main
+        # Divide, or western Norway from its ice divide), so the range's rivers run out to the coast side by side, each a
+        # future fjord; it drops away a little more over the last few km to the real (rugged) shore. (A rim of coastal
+        # uplift here used to pool the rivers behind it and let them out through one gap; a raised plateau dammed the
+        # range's streams into one trunk along its edge; a noise patch of sinking land walled in by the rim became the
+        # ring lake.)
+        dshore = torch.tensor(_nd.distance_transform_edt((self.land > 0.5).cpu().numpy()) * (L / n), device=fx.dev, dtype=torch.float32)
+        d_range = fx.dist_to_polyline(X, Y, NORTH_RANGE)[0]
+        nord_fall = (1 - fx.smoothstep(4.0, 15.0, d_range)) * (0.35 + 0.65 * fx.smoothstep(0.0, 3.0, dshore))
+        # the old surface: low and slow before the late uplift, already sloping to the sea
+        nordic = (0.06 + 0.12 * nord_fall + 0.05 * fx.fbm(n, 8, 4, 33)).clamp(min=0.05) * self.w_nord
         U = (base * (1 - 0.7 * self.w_plateau) + (northR + southR) * (1 - self.w_plateau) + nordic + med + plat + coastR + coastRim) * trough
         U = U * self.land
         self.U = torch.where(self.land > 0.02, U, torch.tensor(-0.2, device=fx.dev)) * 1e-3
-        # late block uplift (the last ~30% of the run): the Nordic highland and the plateau rise faster than their rivers
-        # can keep up — high old surfaces survive inland, gorges (future fjords, canyons) bite in from the edges
-        self.U_late = ((0.4 + 0.12 * fx.fbm(n, 5, 3, 38)) * self.w_nord + 0.36 * self.w_plateau) * self.land * 1e-3
+        # late block uplift: the Nordic highland and the plateau rise faster than their rivers can keep up — high old
+        # surfaces survive inland, gorges (future fjords, canyons) bite in from the edges. late_from: when it starts (share
+        # of the run): the plateau over the last 30%; the Nordic highland over the last 12%, tilting up toward the range —
+        # late and fast, so only its big rivers cut back to the range (knickpoints climb big rivers ~30 km/Myr, small
+        # streams a few km) and the old rolling surface between them survives as fell for the ice to cap
+        nord_tilt = 0.25 + 0.95 * nord_fall
+        self.U_late = ((nord_tilt + 0.2 * fx.fbm(n, 5, 3, 38)) * self.w_nord + 0.36 * self.w_plateau) * self.land * 1e-3
+        self.late_from = 0.7 + 0.18 * self.w_nord
         # rain: wet on the windward north-west, drier in the lee; the Mediterranean limestone drains underground (karst),
         # so its rivers cut less
         self.rain = (1.0 + 0.35 * self.w_nord - 0.3 * self.w_plateau) * (1 - 0.55 * self.w_med)
-        # starting surface: an old, gently rolling land (a peneplain) with the regions at their pre-uplift heights
-        self.h0 = torch.where(self.land > 0.5, 20 + 25 * self.land + 60 * (self.w_nord + self.w_plateau) * (0.6 + 0.4 * fx.fbm(n, 6, 3, 52)), torch.tensor(-30.0, device=fx.dev))
+        # starting surface: an old, gently rolling land (a peneplain) with the regions at their pre-uplift heights. The
+        # Nordic side already falls from the range to the sea: the first rivers set the drainage for good (later uplift
+        # only deepens their valleys), and on a flat plateau they had gathered into one basin leaving by the deepest bay
+        nside = fx.smoothstep(-0.5, 1.5, d_range * torch.sign(NORTH_RANGE_side(X, Y))) * (1 - self.w_volc)
+        h0n = nside * (15 + 100 * nord_fall) * (0.85 + 0.15 * fx.fbm(n, 6, 3, 52))
+        self.h0 = torch.where(self.land > 0.5, 20 + 25 * self.land + 60 * self.w_plateau * (0.6 + 0.4 * fx.fbm(n, 6, 3, 52)) + h0n, torch.tensor(-30.0, device=fx.dev))
 
         # ── rock: erodibility K (1/yr, m = 0.5) and critical slope (tan) ──
         litho = torch.exp(0.4 * fx.fbm(n, 6, 4, 41))

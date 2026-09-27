@@ -51,6 +51,7 @@ Wn = up(D.w_nord)
 g32 = lambda t: t.float().cpu().numpy()        # the weights only scale things: float32 halves them (2.7 → 1.3 GB at 8192²)
 w_nord, w_med, w_volc, w_alp, w_plat = g32(Wn), g32(up(D.w_med)), g32(up(D.w_volc)), g32(up(D.w_alp)), g32(up(D.w_plateau))
 Xc, Yc = fx.coords(N, ds.L)
+w_gran = np.clip(w_nord + g32(up(D.w_pluton)), 0, 1)       # granite: the Nordic highland and the head massif's pluton
 volc_near = g(torch.sqrt((Xc - ds.VOLCANO[0]) ** 2 + (Yc - ds.VOLCANO[1]) ** 2)) < 2.0   # = Design's volc_r < 2 km
 del D, Xc, Yc
 # micro-relief: roughness where it's steep, calm on flats; Nordic ground gets glacially scoured knolls and hollows
@@ -83,13 +84,13 @@ lap('plateau beds')
 H = torch.tensor(h, device=fx.dev, dtype=torch.float32)
 before = H.clone()
 land = (H > 2).float()
-hard = torch.tensor(np.clip(0.55 * w_nord + 0.5 * w_volc, 0, 0.8), device=fx.dev, dtype=torch.float32)
+hard = torch.tensor(np.clip(0.55 * w_gran + 0.5 * w_volc, 0, 0.8), device=fx.dev, dtype=torch.float32)
 sN = max(1, N // 4096)          # finer than 4096²: droplets live as far in metres (their brush stays 3 cells: finer rills)
 detail.droplets(H, dx, int(N * N * 0.8), spawn=land * (1 + 0.5 * torch.tensor(w_nord, device=fx.dev)) + 1e-4, life=64 * sN,
                 inertia=0.3, capacity=2.0, erode=0.08, deposit=0.03, evaporate=0.02, radius=3, hardness=hard)
 lap('droplets')
 dep = (H - before).clamp(min=0)
-talus_tan = torch.tensor(0.9 + 0.35 * w_nord + 0.3 * w_volc, device=fx.dev, dtype=torch.float32)
+talus_tan = torch.tensor(0.9 + 0.35 * w_gran + 0.3 * w_volc, device=fx.dev, dtype=torch.float32)
 pre_t = H.clone()
 detail.talus(H, dx, talus_tan, iters=30)
 scree = (H - pre_t).clamp(min=0)

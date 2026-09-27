@@ -30,3 +30,17 @@ macro variation, so nothing tiles visibly from any height.
 ## Comments
 
 - The user OK'd the texture download at 4K on 2026-09-26.
+- First pass landed in 28c5ff3 (by the materials session). It is High mode only and costs about 0.1 ms, with
+  triplanar mapping on steep faces and anti-tiling. Each region has its own mix of photo layers:
+  - Nordic: heath and granite slabs;
+  - Alpine: grass;
+  - Mediterranean: garrigue with scrub;
+  - the plateau: karst;
+  - the volcano: grass grading to ash.
+  Still open:
+  - trees are stylised against photoreal ground;
+  - lake and sea-floor blotches (ticket 06);
+  - a performance check on a heavy view;
+  - side-by-side screenshots.
+  For A/B in the test build: photo materials appear on High about 2 s after start; `TERRAIN.materials = false` in the
+  console switches back to the procedural look.

@@ -20,3 +20,10 @@ beaches, darker rocky ground under the cliffs, and deep fjord basins left deep.
 - Known cause of stripes: depth is taken from distance to land, and that distance peaks along the middle of every gap
   in the coast, so each bay or fjord mouth throws a deeper channel out to sea. Flatten those ridges, e.g. take the
   minimum of the distance and a blurred copy of it (see ticket 02).
+- Seen in the game (2026-09-26, reported by the materials session):
+  - Big blotchy light and dark patches show through the water near the coast, e.g. off the south coast around km
+    31, 55 looking north, and off the volcano's east side around km 58, 24. Suspected cause: the floor noise scales
+    with depth (a quarter of it) on a shallow shelf, and the water's depth absorption makes every bump visible.
+  - The volcano-dammed lake (km 44–49, 19–28) shows the same blotchy bed. Lake beds need the same treatment: deep
+    enough in the middle, gently shelving shores, and no speckle. Not yet investigated: check what the bed is made of
+    there (flat fill from the landscape model plus micro-relief and droplet deposits?) before choosing a fix.

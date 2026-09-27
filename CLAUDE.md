@@ -1,6 +1,7 @@
 # Windborne ("Updraft")
 
-A single-HTML WebGL2 glider game over a big hand-designed fantasy island. Published as the claude.ai artifact
+A single-HTML WebGL2 glider game over a big hand-designed fantasy island. Source: https://github.com/Starwaves1/Uplift
+(public; `origin`, branch `main` — pull before pushing, another session may commit too). Published as the claude.ai artifact
 https://claude.ai/artifact/JvmmvMKGQd3AMUdpqtUDHE — publish `windborne.html` with that `url` so it updates the same
 artifact (it was first published from another folder, so publishing without the url would create a new one).
 

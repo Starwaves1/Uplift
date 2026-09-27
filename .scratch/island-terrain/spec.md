@@ -24,6 +24,38 @@ would mistake it for real life" — while being built for fun: grounded, with ma
 - Keep the island's JS and GLSL height functions identical, so the ground you collide with is the ground you see.
 - Coordinates in tickets are km on the design grid: x east, y south, origin at the island's north-west corner.
 
+## Ground material map (island_ground.bin) — contract
+
+Owned by ticket 31 (export and loader); bedrock ids come from ticket 17; the materials session drives the photo layers
+from it.
+- **File:** its own file, loaded optionally (absent means today's look). Header 'WBGR', u32 version = 1, u32 n, then
+  zlib of n×n RGBA8, row-major, north-west origin, same extent as the heights, n = 4096.
+- **R, bedrock type (nearest):**
+  - 0 none/sea
+  - 1 granite/gneiss (crystalline basement)
+  - 2 schist/metamorphic
+  - 3 limestone, hard
+  - 4 marl/shale, soft
+  - 5 sandstone
+  - 6 basalt/andesite lava
+  - 7 tuff/ash
+  - 8+ reserved
+- **G, bedrock exposure:** 0..1.
+- **B, soil/regolith depth:** depth_m = 8·(B/255)².
+- **A, sediment type (nearest):**
+  - 0 none
+  - 1 clay/silt
+  - 2 sand
+  - 3 gravel/shingle
+  - 4 boulders/scree/colluvium
+  - 5 volcanic ash/pumice/cinder
+  - 6 glacial till/moraine
+  - 7 alluvial loam
+  - 8+ reserved
+- **GLSL_COMMON:** `vec4 islandGround(vec2 q)` (raw, nearest) and
+  `vec4 islandGroundBlend(vec2 q, out ivec4 types, out vec4 w)`.
+- **JS:** `islandGround(x, z)` returns {bedrock, exposure, depth, sediment}.
+
 ## Bookmarks
 
 Open the muted test build at a place with `?at=X,Y,HEADING,ALT` — km on the design grid, compass degrees (0 north,

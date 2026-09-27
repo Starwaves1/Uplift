@@ -1,14 +1,23 @@
-# 12 — Re-home the old landmarks
+# 12 — Landmarks and villages: on land, with sensible walls
 
-**What to build:** The landmarks from the old procedural world (walls, towers and the like) are placed by rules that
-no longer fit the island, so some land in odd spots, even underwater. Place each one deliberately on the island
-instead, at the village sites and at designed spots such as ridgetops, headlands and passes. Retire any that no longer
-fit.
+**What to build:** The landmarks and villages from the old procedural world are placed by rules that don't fit the
+island. The user reports "villages which are half underwater" and "the walls inside villages are placed
+nonsensically". Fix placement on today's island now:
+- no building, wall or tower in water, buried, floating, or on ground too steep for it;
+- villages on suitable sites (gentle slopes, near water but above it, sheltered);
+- walls following sensible lines: village perimeters, field and pasture boundaries, terraces, roads.
 
-**Blocked by:** 10 — Village sites
+When the village sites (ticket 10) and the new village architecture (26) land, re-home them properly.
 
-**Status:** ready-for-agent
+**Blocked by:** None — can start immediately (re-homing onto designed village sites comes with 10 and 26)
 
-- [ ] No landmark is underwater, buried, or floating anywhere on the island
-- [ ] Each kept landmark has a designed position that suits its type and the region
-- [ ] Reviewed in the game at every landmark, with screenshots
+**Status:** claimed
+
+- [ ] No landmark, building or wall is underwater, buried or floating anywhere on the island
+- [ ] Villages sit on sensible sites; walls follow perimeters, fields, terraces or roads
+- [ ] Reviewed in spectator mode at several villages by the user, with before/after screenshots
+
+## Comments
+
+- 2026-09-27, user: "There are villages which are half underwater" and "The walls inside villages are placed
+  nonsensically." Picked up by the ticket-21 agent after the footing fix (same module).

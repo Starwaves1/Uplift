@@ -302,7 +302,11 @@ void main(){
     }
     if (wScree > 0.01) { matTop(L_SCREE, wp.xz, 5.0, a, g, h); ADDL(wScree) }
     if (wShore > 0.01) {         // pale warm sand in the south, shingle and rock on the Nordic shore
-      if (nord < 0.6) { matTop(L_BEACH, wp.xz, 1.0, a, g, h); a = mix(a, lumi(a)*vec3(1.12, 1.03, 0.86), med + plat); ADDL(wShore*(1.0 - nord)) }
+      if (nord < 0.6) {          // …and black sand on the volcano's shores
+        matTop(L_BEACH, wp.xz, 1.0, a, g, h);
+        a = mix(a, lumi(a)*vec3(1.12, 1.03, 0.86), med + plat); a = mix(a, lumi(a)*vec3(0.36, 0.35, 0.35), volc);
+        ADDL(wShore*(1.0 - nord))
+      }
       if (nord > 0.02) { matTop(L_SHORE, wp.xz, 1.0, a, g, h); ADDL(wShore*nord) }
     }
     if (wGravel > 0.01) { matTop(L_GRAVEL, wp.xz, 4.0, a, g, h); a = mix(a, lumi(a)*vec3(0.95, 0.98, 1.02)*1.1, 0.6); ADDL(wGravel) }

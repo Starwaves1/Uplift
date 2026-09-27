@@ -576,10 +576,32 @@ float terrainDetail(vec2 q, float minWave, float hc, vec4 nb){
 // carries the coarser grooves, so the rills branch into those as the geometric octaves do. Each octave comes in where
 // the vertex heights left it out and fades as it shrinks below the pixel, so nothing shimmers and LODs hand over evenly.
 //   q: world xz; n: the interpolated vertex normal (normalised); geoWave: the minWave the vertex heights were filtered
-//   at (vGeoWave from the terrain vertex shader); fp: the pixel footprint (m); maps, regions: islandMaps(q), islandRegions(q)
+//   at (vGeoWave from the terrain vertex shader); fp: the pixel footprint (m); maps, regions: islandMaps(q), islandRegions(q);
+//   cMax: the largest octave to add (m): 4 for the rills alone (cheap: near the camera only), 16 to also give back, as
+//   shading, the octaves the coarser meshes (LOD 1–2, 180–700 m) leave out (every octave costs a 3×3-cell loop)
 //   → (dh/dx, dh/dz, groove −1 … rib +1). Use: n' = normalize(vec3(n.x/n.y − s.x, 1, n.z/n.y − s.y)), weighted by the
 //   ground's softness (rills cut soil, scree and ash, not bare rock or snow).
-vec3 terrainDetailFrag(vec2 q, vec3 n, float geoWave, float fp, vec4 maps, vec4 regions){
+// a cheap octave of rills for the octaves no mesh ever carries (≤ 4 m): each lattice corner lays stripes across t with
+// its own random phase, measured from the corner (so turning t never swings stripes far away), blended bilinearly as
+// phase vectors: 4 hashes and 3 sine/cosine pairs instead of gullyOct's 9 cells → (cos, sin) of the stripe
+vec2 rillOct(vec2 p, vec2 t, int o){
+  vec2 ip = floor(p), f = p - ip, w = f*f*(3.0 - 2.0*f);
+  ivec2 b = ivec2(ip); int so = 31337 + 7919*o;
+  float ax = -6.2831853*t.x, az = -6.2831853*t.y, th = 6.2831853*dot(f, t);
+  vec2 ex = vec2(cos(ax), sin(ax)), ez = vec2(cos(az), sin(az)), acc = vec2(0.0);
+  for (int k = 0; k < 4; k++) {
+    int kx = k & 1, kz = k >> 1;
+    uint hh = hash2u(b + ivec2(kx, kz + so));
+    vec2 v = vec2(float(hh & 255u), float((hh >> 8u) & 255u)) - 127.5;
+    v /= length(v) + 1.0;                                             // the corner's phase e^{iφ}
+    if (kx == 1) v = vec2(v.x*ex.x - v.y*ex.y, v.x*ex.y + v.y*ex.x);  // × e^{−2πi t·(1,0)}
+    if (kz == 1) v = vec2(v.x*ez.x - v.y*ez.y, v.x*ez.y + v.y*ez.x);  // × e^{−2πi t·(0,1)}
+    acc += v*(kx == 1 ? w.x : 1.0 - w.x)*(kz == 1 ? w.y : 1.0 - w.y);
+  }
+  vec2 s = vec2(cos(th), sin(th)), r = acc/sqrt(dot(acc, acc) + 0.02);
+  return vec2(s.x*r.x - s.y*r.y, s.x*r.y + s.y*r.x);
+}
+vec3 terrainDetailFrag(vec2 q, vec3 n, float geoWave, float fp, vec4 maps, vec4 regions, float cMax){
   vec2 g = -n.xz/max(n.y, 0.2);
   float sl = length(g);
   float nord = regions.x, med = regions.y, plat = regions.z, volc = regions.w, alp = clamp(1.0 - nord - med - plat - volc, 0.0, 1.0);
@@ -594,10 +616,11 @@ vec3 terrainDetailFrag(vec2 q, vec3 n, float geoWave, float fp, vec4 maps, vec4 
     float wp = 1.0 - smoothstep(0.25*c, 0.5*c, fp);
     if (c < 0.9 || wp <= 0.0) break;
     float wg = 1.0 - smoothstep(geo, 2.0*geo, c);
-    if (wg > 0.0) {
+    if (wg > 0.0 && c <= cMax) {
       vec2 G = g + 2.0*branch*sl*(fl - dot(fl, u)*u); float l = sqrt(dot(G, G) + 1e-4);
-      vec2 t = vec2(-G.y, G.x)/l; vec3 gv = gullyOct(q/c, t, o);
-      float dep = 0.3 + 0.7*gv.z, s0 = sqrt(max(0.5 + 0.5*gv.x, 0.0) + 0.03), w = wg*wp;
+      vec2 t = vec2(-G.y, G.x)/l; vec3 gv = c > TDET_MINWAVE ? gullyOct(q/c, t, o) : vec3(rillOct(q/c, t, o), 0.5);
+      // the V's kink rounded to the pixel, so a groove's floor never flips the slope inside one pixel
+      float dep = 0.3 + 0.7*gv.z, s0 = sqrt(max(0.5 + 0.5*gv.x, 0.0) + 0.03 + 22.0*(fp/c)*(fp/c)), w = wg*wp;
       res.xy += w*amp*c*0.25*a*dep*(0.5/s0)*(6.2831853*gv.y/c)*t;
       res.z += w*a*(2.0*s0 - 1.355); sw += w*a;
       fl += a*dep*gv.y*t;

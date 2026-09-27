@@ -104,9 +104,9 @@ function forestMask(x, z) {
 // ── the island: a baked heightfield (island.bin, decoded by boot.js into window.ISLAND_DATA) ──
 // Stored as 16-bit steps (height = q·step + offset; 8192² at 7.8 m: 128 MB here, the same again on the GPU — a float
 // copy would be twice that). Heights between samples are Catmull-Rom bicubic (smooth, and it keeps the ridgelines), plus
-// a little micro-relief below the grid's resolution — the same function as the GLSL terrainH(), so the ground you
-// collide with is the ground you see. Without island data (the model viewer, or a failed load) the old procedural world
-// stands in.
+// the detail synthesised below the grid's resolution (terrainDetail) — the same function as the GLSL terrainH(), so the
+// ground you collide with is the ground you see. Without island data (the model viewer, or a failed load) the old
+// procedural world stands in.
 const ISLAND = (() => {
   const D = typeof window !== 'undefined' && window.ISLAND_DATA;
   if (!D) return null;
@@ -144,13 +144,152 @@ function islandH(x, z) {
   return _cr(_cr(q[y0 + x0], q[y0 + x1], q[y0 + x2], q[y0 + x3], fu), _cr(q[y1 + x0], q[y1 + x1], q[y1 + x2], q[y1 + x3], fu),
     _cr(q[y2 + x0], q[y2 + x1], q[y2 + x2], q[y2 + x3], fu), _cr(q[y3 + x0], q[y3 + x1], q[y3 + x2], q[y3 + x3], fu), fv) * I.step + I.offset;
 }
-function microH(x, z) {
-  return (vn(x / 9.1 + 3.7, z / 9.1 + 1.3) - 0.5) * 1.1 + (vn(x / 3.3 + 7.1, z / 3.3 + 2.9) - 0.5) * 0.45;
+// ── terrain detail below the stored grid (JS twin of terrainDetail() in GLSL_COMMON: same numbers, same order) ──
+// The stored heights stop at one sample every ISLAND.dx metres, and Catmull-Rom between them is smooth and blobby; below
+// that the ground gets the relief real slopes have at 8–32 m, synthesised from the island's own maps (and from the rock:
+// the regions stand in for ticket 17's rock-type map until it exists):
+//  - gullies and rills: grooves down the fall line (an erosion filter: each cell of a jittered lattice lays a cosine
+//    across the slope through its point; the cells' phases are blended as vectors and normalised, so the grooves keep
+//    their depth and fork where cells disagree). Each finer octave follows the slope with the coarser grooves in it, so
+//    rills run down their flanks into them and the network branches; near the base's own hollows and spurs the octaves
+//    lean toward a groove or a rib, so the stored landform's gullies stay clean. V-shaped, deep on steep ground, none on
+//    flats, straighter and softer in scree, none in alluvium and river channels.
+//  - knobs: the Nordic granite, scoured by the ice into rounded bosses and hollows, streamlined down-glacier.
+//  - ledges: the rock's bedding, a soft staircase in the height (plus a dip) with beds of uneven thickness and hardness,
+//    in the limestone south, on the plateau and in the volcano's lava; they fade where their spacing on the ground gets
+//    finer than the mesh can draw.
+// Each octave fades out by the LOD's minWave like the rest of the terrain. The finest mesh (LOD 0) is a 2 m grid
+// filtered at minWave 4 m, so the finest geometric octave is 8 m, and JS (collision) always evaluates at that filter:
+// the same height the nearest mesh is built from. Finer relief belongs to the fragment shader: terrainDetailFrag().
+const TDET = (() => {
+  const texel = ISLAND ? ISLAND.dx : 16, M = typeof window !== 'undefined' && window.ISLAND_MAPS;
+  return { MINWAVE: 4, c0: Math.pow(2, Math.round(Math.log2(texel * 2))), e: texel, M: M || null, m: [0, 0, 0, 1], r: [0, 0, 0, 1], g: [0, 0, 0] };
+})();
+// bilinear between texel centres of an RGBA8 island map (n², over the island), clamped at the edges, 0…1 → out
+function islTex(data, n, x, z, out) {
+  if (!data) { out[0] = 0; out[1] = 0; out[2] = 0; out[3] = 1; return out; } // as WebGL samples a missing texture
+  const I = ISLAND, u = (x - I.origin) * I.inv / I.n * n - 0.5, v = (z - I.origin) * I.inv / I.n * n - 0.5;
+  const iu = Math.floor(u), iv = Math.floor(v), fu = u - iu, fv = v - iv, m = n - 1;
+  const x0 = Math.min(Math.max(iu, 0), m) * 4, x1 = Math.min(Math.max(iu + 1, 0), m) * 4;
+  const y0 = Math.min(Math.max(iv, 0), m) * n * 4, y1 = Math.min(Math.max(iv + 1, 0), m) * n * 4;
+  for (let c = 0; c < 4; c++) {
+    const a = data[y0 + x0 + c] / 255, b = data[y0 + x1 + c] / 255, d = data[y1 + x0 + c] / 255, e = data[y1 + x1 + c] / 255;
+    const top = a * (1 - fu) + b * fu, bot = d * (1 - fu) + e * fu;
+    out[c] = top * (1 - fv) + bot * fv;
+  }
+  return out;
+}
+// one octave of grooves: p in cells, (tx, tz) the unit direction across the slope, o the octave (its own lattice).
+// The cells' stripes are blended as phase vectors (cos, sin) and normalised, so the grooves keep their full depth where
+// neighbouring cells disagree and only fork there; their depth comes from a separate smooth per-cell amplitude.
+// → TDET.g = [height −1…1 (the stripe's cosine), its sine (the flank: the slope across is ∝ sine·t), depth 0…1]
+function gullyOct(px, pz, tx, tz, o) {
+  const ix = Math.floor(px), iz = Math.floor(pz), fx = px - ix, fz = pz - iz, so = 7919 * (o + 1);
+  let sc = 0, ssn = 0, sa = 0, sw = 1e-4;
+  for (let j = -1; j <= 1; j++) for (let i = -1; i <= 1; i++) {
+    const cx = ix + i, cz = iz + j;
+    const ox = i + 0.2 + 0.6 * hash2(cx, cz + so) - fx, oz = j + 0.2 + 0.6 * hash2(cx + so, cz) - fz;
+    const d2 = ox * ox + oz * oz;
+    if (d2 >= 1.44) continue;
+    // each groove its own depth and spacing (the deeper, the wider)
+    const hm = hash2(cx + so, cz + so), fr = 6.2831853 * (1.15 - 0.3 * hm);
+    const k = 1 - d2 / 1.44, w = k * k * k, ph = fr * (ox * tx + oz * tz);
+    sc += w * Math.cos(ph); ssn += w * Math.sin(ph); sa += w * hm * hm; sw += w;
+  }
+  const g = TDET.g, m = 1 / Math.sqrt(sc * sc + ssn * ssn + 0.01 * sw * sw);
+  g[0] = sc * m; g[1] = ssn * m; g[2] = sa / sw;
+  return g;
+}
+// one octave of ice-scoured knobs: rounded bosses of granite on a jittered lattice, streamlined along the ice's flow
+// (ax, az: unit, down-glacier), long and smooth on the side the ice came from, steep where it plucked the lee; their
+// union (1 − Π(1 − dome)) → height 0…1
+function knobOct(px, pz, ax, az, o) {
+  const ix = Math.floor(px), iz = Math.floor(pz), fx = px - ix, fz = pz - iz, so = 104729 + 7919 * o;
+  let u1 = 1;
+  for (let j = -1; j <= 1; j++) for (let i = -1; i <= 1; i++) {
+    const cx = ix + i, cz = iz + j;
+    const ox = fx - i - 0.2 - 0.6 * hash2(cx, cz + so), oz = fz - j - 0.2 - 0.6 * hash2(cx + so, cz);
+    let u = ox * ax + oz * az;
+    const v = oz * ax - ox * az;
+    u *= u > 0 ? 1.6 : 0.8;
+    const hk = hash2(cx + so, cz + so), rr = 0.45 + 0.4 * hk, d2 = (u * u + v * v * 1.4) / (rr * rr);
+    if (d2 >= 1) continue;
+    const k = 1 - d2;
+    u1 *= 1 - (0.35 + 0.65 * hk) * k * k;
+  }
+  return 1 - u1;
+}
+// the detail height (m) at (x, z) for a mesh filtered at minWave (m); h = islandH(x, z)
+function terrainDetail(x, z, minWave, h) {
+  const T = TDET;
+  minWave = Math.max(minWave, T.MINWAVE);
+  const land = ss(0.5, 3.0, h);
+  if (minWave >= T.c0 || land <= 0) return 0;
+  const e = T.e, hxp = islandH(x + e, z), hxm = islandH(x - e, z), hzp = islandH(x, z + e), hzm = islandH(x, z - e);
+  const gx = (hxp - hxm) / (2 * e), gz = (hzp - hzm) / (2 * e), sl = Math.sqrt(gx * gx + gz * gz);
+  const lap = (hxp + hxm + hzp + hzm - 4 * h) / (e * e);
+  const M = T.M, m = islTex(M && M.maps, M ? M.nm : 1, x, z, T.m), r = islTex(M && M.regions, M ? M.nr : 1, x, z, T.r);
+  // the rock (ticket 17 will export a rock-type map; until then the regions stand for it)
+  const nord = r[0], med = r[1], plat = r[2], volc = r[3], alp = Math.min(Math.max(1 - nord - med - plat - volc, 0), 1);
+  const scree = m[2], calm = (1 - ss(0.35, 0.85, m[1])) * (1 - ss(0.3, 0.65, m[0])) * land;
+  const gully = (0.5 * nord + 0.75 * med + 0.55 * plat + 0.9 * volc + 1.0 * alp) * (1 - 0.5 * scree);
+  const branch = (0.9 * nord + 0.9 * med + 0.8 * plat + 0.3 * volc + 1.0 * alp) * (1 - 0.8 * scree);
+  let d = 0;
+  // gullies and rills. r: the coarser relief's shape here, −1 in a hollow or gully … +1 on a spur or rib — each octave is
+  // drawn toward it where it's strong, so gully floors and crests stay clean and the detail gathers on the flanks.
+  // (fx, fz): the coarser grooves' flank direction, which bends the finer ones into them
+  const amp = gully * ss(0.05, 1.0, sl) * calm;
+  if (amp > 0) {
+    let r = Math.min(Math.max(-lap * 20, -1), 1), fx = 0, fz = 0, a = 1;
+    const ux = gx / (sl + 1e-6), uz = gz / (sl + 1e-6);
+    for (let o = 0; o < 6; o++) {
+      const c = T.c0 * Math.pow(2, -o);
+      if (c <= minWave) break;
+      // the flank only turns the fall line (its part along the slope is dropped, so the two can never cancel)
+      const fa = fx * ux + fz * uz, px = fx - fa * ux, pz = fz - fa * uz;
+      const Gx = gx + 2 * branch * sl * px, Gz = gz + 2 * branch * sl * pz, l = Math.sqrt(Gx * Gx + Gz * Gz + 1e-4);
+      const tx = -Gz / l, tz = Gx / l, g = gullyOct(x / c, z / c, tx, tz, o), k = 0.4 * r * r;
+      const v = g[0] + (r - g[0]) * k, dep = 0.3 + 0.7 * g[2];
+      // V-shaped gullies, rounded ribs: ~2|cos(θ/2)| − 4/π (zero mean)
+      d += ss(minWave, 2 * minWave, c) * amp * c * 0.25 * a * dep * (2 * Math.sqrt(Math.max(0.5 + 0.5 * v, 0) + 0.03) - 1.355);
+      const fl = a * dep * (1 - k) * g[1];
+      fx += fl * tx; fz += fl * tz;
+      r = v; a *= o < 2 ? 0.55 : 0.8;
+    }
+  }
+  // knobs: the Nordic granite, scoured by the ice sheet into rounded bosses with hollows between (flats too: knock-and-
+  // lochan country), streamlined the way the ice flowed: out from the highlands to the north-west coast
+  const knob = nord * (1 - ss(0.9, 1.5, sl)) * calm;
+  if (knob > 0) {
+    let a = 1;
+    for (let o = 0; o < 6; o++) {
+      const c = T.c0 * Math.pow(2, -o);
+      if (c <= minWave) break;
+      d += ss(minWave, 2 * minWave, c) * knob * c * 0.16 * a * (knobOct(x / c, z / c, -0.78, -0.625, o) - 0.26);
+      a *= 0.45;
+    }
+  }
+  // ledges: the bedding, where the rock shows through. Beds of uneven thickness (a gentle warp of the level), each its own
+  // hardness and bench width, and the ledges die out and return along the strike
+  const ledge = (0.2 * nord + 0.7 * med + 1.0 * plat + 0.6 * volc + 0.25 * alp) * Math.max(m[3], ss(0.3, 0.9, sl)) * (1 - scree) * calm;
+  if (ledge > 0) {
+    const bed = 5 * nord + 7 * med + 8 * plat + 10 * volc + 6 * alp;
+    const dx = 0.03 * med + 0.01 * plat + 0.2 * alp, dz = 0.01 * med - 0.005 * plat + 0.08 * alp;
+    const lx = gx + dx, lz = gz + dz, P = bed / Math.max(Math.sqrt(lx * lx + lz * lz), 1e-3);
+    const w = ss(minWave * 1.5, minWave * 3, P);
+    if (w > 0) {
+      const zl = (h + dx * x + dz * z) / bed, s = zl + 0.35 * (vn(zl * 0.43 + 3.7, 0.5) - 0.5), fl = Math.floor(s), f = s - fl;
+      const thr = 0.3 + 0.4 * hash2(fl, 9173), hard = 0.35 + 0.65 * hash2(fl + 7, 331);
+      const lat = 0.3 + 0.7 * ss(0.3, 0.7, vn(x / 97 + 1.3, z / 97 + 7.9));
+      d += ledge * w * bed * hard * lat * (ss(thr - 0.15, thr + 0.15, f) - f);
+    }
+  }
+  return d;
 }
 function terrainH(x, z, det) {
   if (!ISLAND) return terrainHProc(x, z, det);
   const h = islandH(x, z);
-  return det >= 1 ? h + microH(x, z) * ss(0.5, 3.0, h) : h;
+  return det >= 1 ? h + terrainDetail(x, z, TDET.MINWAVE, h) : h;
 }
 // how mountainous the country around (x, z) is, 0 lowland … 1 high mountains (smooth over kilometres)
 function terrainHigh(x, z) {
@@ -289,13 +428,151 @@ float hmLod(vec2 q, float lod){
 uniform sampler2D uIslMaps, uIslReg;
 vec4 islandMaps(vec2 q){ return textureLod(uIslMaps, (q - uHeightP.x)*uHeightP.y/uHeightP.z, 0.0); }
 vec4 islandRegions(vec2 q){ return textureLod(uIslReg, (q - uHeightP.x)*uHeightP.y/uHeightP.z, 0.0); }
-float microH(vec2 q){ return (vn(q/9.1 + vec2(3.7, 1.3)) - 0.5)*1.1 + (vn(q/3.3 + vec2(7.1, 2.9)) - 0.5)*0.45; }
+// ── terrain detail below the stored grid (JS twin: TDET / islTex / gullyOct / terrainDetail in core.js, which explains
+// it): gullies and rills down the fall line, ledges along the bedding, driven by the island's maps ──
+const float TDET_MINWAVE = 4.0; // the finest mesh's filter (LOD 0: a 2 m grid at minWave 2 cells)
+float tdetC0(){ return exp2(round(log2(2.0/uHeightP.y))); } // the coarsest groove cell (m): ~2 stored texels
+// bilinear between texel centres of an island map, clamped at the edges (texelFetch: exact, so JS matches)
+vec4 islTex(sampler2D s, vec2 q){
+  int n = max(textureSize(s, 0).x, 1);
+  vec2 t = (q - uHeightP.x)*uHeightP.y/uHeightP.z*float(n) - 0.5, fl = floor(t), f = t - fl;
+  ivec2 i = ivec2(fl), m = ivec2(n - 1);
+  vec4 a = texelFetch(s, clamp(i, ivec2(0), m), 0), b = texelFetch(s, clamp(i + ivec2(1, 0), ivec2(0), m), 0);
+  vec4 c = texelFetch(s, clamp(i + ivec2(0, 1), ivec2(0), m), 0), d = texelFetch(s, clamp(i + ivec2(1, 1), ivec2(0), m), 0);
+  return (a*(1.0 - f.x) + b*f.x)*(1.0 - f.y) + (c*(1.0 - f.x) + d*f.x)*f.y;
+}
+// one octave of grooves: p in cells, t the unit direction across the slope → (the stripe's cosine −1…1, its sine,
+// depth 0…1): phase vectors blended and normalised
+vec3 gullyOct(vec2 p, vec2 t, int o){
+  vec2 ip = floor(p), f = p - ip;
+  ivec2 b = ivec2(ip); int so = 7919*(o + 1);
+  float sc = 0.0, sn = 0.0, sa = 0.0, sw = 1e-4;
+  for (int j = -1; j <= 1; j++) for (int i = -1; i <= 1; i++) {
+    ivec2 c = b + ivec2(i, j);
+    vec2 of = vec2(float(i) + 0.2 + 0.6*hash2(c + ivec2(0, so)) - f.x, float(j) + 0.2 + 0.6*hash2(c + ivec2(so, 0)) - f.y);
+    float d2 = dot(of, of);
+    if (d2 >= 1.44) continue;
+    float hm = hash2(c + ivec2(so, so)), fr = 6.2831853*(1.15 - 0.3*hm);
+    float k = 1.0 - d2/1.44, w = k*k*k, ph = fr*dot(of, t);
+    sc += w*cos(ph); sn += w*sin(ph); sa += w*hm*hm; sw += w;
+  }
+  float m = 1.0/sqrt(sc*sc + sn*sn + 0.01*sw*sw);
+  return vec3(sc*m, sn*m, sa/sw);
+}
+// one octave of ice-scoured knobs (a: unit, down-glacier) → height 0…1
+float knobOct(vec2 p, vec2 a, int o){
+  vec2 ip = floor(p), f = p - ip;
+  ivec2 b = ivec2(ip); int so = 104729 + 7919*o;
+  float u1 = 1.0;
+  for (int j = -1; j <= 1; j++) for (int i = -1; i <= 1; i++) {
+    ivec2 c = b + ivec2(i, j);
+    vec2 of = vec2(f.x - float(i) - 0.2 - 0.6*hash2(c + ivec2(0, so)), f.y - float(j) - 0.2 - 0.6*hash2(c + ivec2(so, 0)));
+    float u = of.x*a.x + of.y*a.y, v = of.y*a.x - of.x*a.y;
+    u *= u > 0.0 ? 1.6 : 0.8;
+    float hk = hash2(c + ivec2(so, so)), rr = 0.45 + 0.4*hk, d2 = (u*u + v*v*1.4)/(rr*rr);
+    if (d2 >= 1.0) continue;
+    float k = 1.0 - d2;
+    u1 *= 1.0 - (0.35 + 0.65*hk)*k*k;
+  }
+  return 1.0 - u1;
+}
+// the detail height (m) at q for a mesh filtered at minWave (m); hc = hmCubic(q)
+float terrainDetail(vec2 q, float minWave, float hc){
+  minWave = max(minWave, TDET_MINWAVE);
+  float c0 = tdetC0(), land = smoothstep(0.5, 3.0, hc);
+  if (minWave >= c0 || land <= 0.0) return 0.0;
+  float e = 1.0/uHeightP.y, hxp = hmCubic(q + vec2(e, 0.0)), hxm = hmCubic(q - vec2(e, 0.0)), hzp = hmCubic(q + vec2(0.0, e)), hzm = hmCubic(q - vec2(0.0, e));
+  vec2 g = vec2(hxp - hxm, hzp - hzm)/(2.0*e);
+  float sl = length(g), lap = (hxp + hxm + hzp + hzm - 4.0*hc)/(e*e);
+  vec4 m = islTex(uIslMaps, q), r = islTex(uIslReg, q);
+  float nord = r.x, med = r.y, plat = r.z, volc = r.w, alp = clamp(1.0 - nord - med - plat - volc, 0.0, 1.0);
+  float scree = m.z, calm = (1.0 - smoothstep(0.35, 0.85, m.y))*(1.0 - smoothstep(0.3, 0.65, m.x))*land;
+  float gully = (0.5*nord + 0.75*med + 0.55*plat + 0.9*volc + 1.0*alp)*(1.0 - 0.5*scree);
+  float branch = (0.9*nord + 0.9*med + 0.8*plat + 0.3*volc + 1.0*alp)*(1.0 - 0.8*scree);
+  float d = 0.0;
+  float amp = gully*smoothstep(0.05, 1.0, sl)*calm;
+  if (amp > 0.0) {
+    float r = clamp(-lap*20.0, -1.0, 1.0), a = 1.0; vec2 fl = vec2(0.0), u = g/(sl + 1e-6);
+    for (int o = 0; o < 6; o++) {
+      float c = c0*exp2(-float(o));
+      if (c <= minWave) break;
+      vec2 G = g + 2.0*branch*sl*(fl - dot(fl, u)*u); float l = sqrt(dot(G, G) + 1e-4);
+      vec2 t = vec2(-G.y, G.x)/l; vec3 gv = gullyOct(q/c, t, o); float k = 0.4*r*r;
+      float v = gv.x + (r - gv.x)*k, dep = 0.3 + 0.7*gv.z;
+      d += smoothstep(minWave, 2.0*minWave, c)*amp*c*0.25*a*dep*(2.0*sqrt(max(0.5 + 0.5*v, 0.0) + 0.03) - 1.355);
+      fl += a*dep*(1.0 - k)*gv.y*t;
+      r = v; a *= o < 2 ? 0.55 : 0.8;
+    }
+  }
+  float knob = nord*(1.0 - smoothstep(0.9, 1.5, sl))*calm;
+  if (knob > 0.0) {
+    float a = 1.0;
+    for (int o = 0; o < 6; o++) {
+      float c = c0*exp2(-float(o));
+      if (c <= minWave) break;
+      d += smoothstep(minWave, 2.0*minWave, c)*knob*c*0.16*a*(knobOct(q/c, vec2(-0.78, -0.625), o) - 0.26);
+      a *= 0.45;
+    }
+  }
+  float ledge = (0.2*nord + 0.7*med + 1.0*plat + 0.6*volc + 0.25*alp)*max(m.w, smoothstep(0.3, 0.9, sl))*(1.0 - scree)*calm;
+  if (ledge > 0.0) {
+    float bed = 5.0*nord + 7.0*med + 8.0*plat + 10.0*volc + 6.0*alp;
+    vec2 dip = vec2(0.03*med + 0.01*plat + 0.2*alp, 0.01*med - 0.005*plat + 0.08*alp), lg = g + dip;
+    float P = bed/max(length(lg), 1e-3), w = smoothstep(minWave*1.5, minWave*3.0, P);
+    if (w > 0.0) {
+      float zl = (hc + dip.x*q.x + dip.y*q.y)/bed, s = zl + 0.35*(vn(vec2(zl*0.43 + 3.7, 0.5)) - 0.5), fl = floor(s), f = s - fl;
+      float thr = 0.3 + 0.4*hash2(ivec2(int(fl), 9173)), hard = 0.35 + 0.65*hash2(ivec2(int(fl) + 7, 331));
+      float lat = 0.3 + 0.7*smoothstep(0.3, 0.7, vn(q/97.0 + vec2(1.3, 7.9)));
+      d += ledge*w*bed*hard*lat*(smoothstep(thr - 0.15, thr + 0.15, f) - f);
+    }
+  }
+  return d;
+}
+// ── sub-mesh detail, for the terrain's fragment shader (shading only, so no JS twin) ──
+// The gully octaves of terrainDetail() that the vertex grid can't carry, continued down to 1 m: rills on soil, scree
+// and ash, as a slope to add to the surface's like a bump map. The mesh's own normal steers them: its fall line already
+// carries the coarser grooves, so the rills branch into those as the geometric octaves do. Each octave comes in where
+// the vertex heights left it out and fades as it shrinks below the pixel, so nothing shimmers and LODs hand over evenly.
+//   q: world xz; n: the interpolated vertex normal (normalised); geoWave: the minWave the vertex heights were filtered
+//   at (vGeoWave from the terrain vertex shader); fp: the pixel footprint (m); maps, regions: islandMaps(q), islandRegions(q)
+//   → (dh/dx, dh/dz, groove −1 … rib +1). Use: n' = normalize(vec3(n.x/n.y − s.x, 1, n.z/n.y − s.y)), weighted by the
+//   ground's softness (rills cut soil, scree and ash, not bare rock or snow).
+vec3 terrainDetailFrag(vec2 q, vec3 n, float geoWave, float fp, vec4 maps, vec4 regions){
+  vec2 g = -n.xz/max(n.y, 0.2);
+  float sl = length(g);
+  float nord = regions.x, med = regions.y, plat = regions.z, volc = regions.w, alp = clamp(1.0 - nord - med - plat - volc, 0.0, 1.0);
+  float scree = maps.z, calm = (1.0 - smoothstep(0.35, 0.85, maps.y))*(1.0 - smoothstep(0.3, 0.65, maps.x));
+  float gully = (0.5*nord + 0.75*med + 0.55*plat + 0.9*volc + 1.0*alp)*(1.0 - 0.5*scree);
+  float branch = (0.9*nord + 0.9*med + 0.8*plat + 0.3*volc + 1.0*alp)*(1.0 - 0.8*scree);
+  float amp = gully*smoothstep(0.05, 1.0, sl)*calm, geo = max(geoWave, TDET_MINWAVE), c0 = tdetC0(), a = 1.0, sw = 1e-4;
+  vec3 res = vec3(0.0); vec2 fl = vec2(0.0), u = g/(sl + 1e-6);
+  if (amp <= 0.0) return res;
+  for (int o = 0; o < 8; o++) {
+    float c = c0*exp2(-float(o));
+    float wp = 1.0 - smoothstep(0.25*c, 0.5*c, fp);
+    if (c < 0.9 || wp <= 0.0) break;
+    float wg = 1.0 - smoothstep(geo, 2.0*geo, c);
+    if (wg > 0.0) {
+      vec2 G = g + 2.0*branch*sl*(fl - dot(fl, u)*u); float l = sqrt(dot(G, G) + 1e-4);
+      vec2 t = vec2(-G.y, G.x)/l; vec3 gv = gullyOct(q/c, t, o);
+      float dep = 0.3 + 0.7*gv.z, s0 = sqrt(max(0.5 + 0.5*gv.x, 0.0) + 0.03), w = wg*wp;
+      res.xy += w*amp*c*0.25*a*dep*(0.5/s0)*(6.2831853*gv.y/c)*t;
+      res.z += w*a*(2.0*s0 - 1.355); sw += w*a;
+      fl += a*dep*gv.y*t;
+    }
+    a *= o < 2 ? 0.55 : 0.8;
+  }
+  res.z /= sw;
+  return res;
+}
 float terrainH(vec2 q, float minWave){
   if (uHeightP.w < 0.5) return terrainHProc(q, minWave);
   float texel = 1.0/uHeightP.y, h;
-  if (minWave <= texel*1.5) h = hmCubic(q);
+  bool fine = minWave <= texel*1.5;
+  if (fine) h = hmCubic(q);
   else h = hmLod(q, log2(minWave/(texel*1.5)));
-  return h + microH(q)*smoothstep(0.5, 3.0, h)*(1.0 - smoothstep(4.0, 12.0, minWave));
+  if (max(minWave, TDET_MINWAVE) < tdetC0()) h += terrainDetail(q, minWave, fine ? h : hmCubic(q));
+  return h;
 }
 // Lighting is scene-linear HDR. Colours authored in the code are sRGB and go through toLin() before lighting.
 // uSunCol = sun irradiance/π at the camera, uAmb = sky irradiance/π on an up-facing surface,

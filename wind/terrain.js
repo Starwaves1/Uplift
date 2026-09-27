@@ -54,6 +54,7 @@ layout(location=2) in vec2 aSlot;
 uniform mat4 uVP; uniform highp sampler2D uHC; uniform sampler2D uHM; uniform float uRangeK;
 out vec3 vRel; out vec3 vN; out float vH; out float vForest; out float vVar; out float vVar2; out float vCurv; out float vDry;
 out float vLod;
+out float vGeoWave; // the minWave (m) these heights were filtered at: detail finer than this is left to terrainDetailFrag()
 void main(){
   float cell = aNode.z / 32.0;
   vec2 wp = aNode.xy + aGrid*cell;
@@ -66,6 +67,7 @@ void main(){
   ivec2 g = ivec2(aGrid + 0.5), base = ivec2(aSlot + 0.5) + 1, gm = g - (g & ivec2(1));
   vec2 hA = texelFetch(uHC, base + g, 0).rg, hB = texelFetch(uHC, base + gm, 0).rg;
   float h = mix(hA.x, mix(hA.y, hB.y, k), k);
+  vGeoWave = cell*2.0*(1.0 + k);
   vec2 hl = texelFetch(uHC, base + g - ivec2(1, 0), 0).rg, hr = texelFetch(uHC, base + g + ivec2(1, 0), 0).rg;
   vec2 hd = texelFetch(uHC, base + g - ivec2(0, 1), 0).rg, hu = texelFetch(uHC, base + g + ivec2(0, 1), 0).rg;
   vec2 nx = hl - hr, nz = hd - hu;

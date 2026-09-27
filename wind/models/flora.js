@@ -668,12 +668,19 @@ void main(){
   float lo = clamp((uLod.x - d)/uLod.z, 0.0, 1.0);
   float hi = uLod.y < 0.0 ? clamp((iB.w - d)/25.0, 0.0, 1.0) : clamp((uLod.y - d)/uLod.z, 0.0, 1.0);
   vFade = uLod.w > 0.5 ? vec2(0.0, 2.0) : vec2(lo, hi);
-  float sc = iA.w;
-  if (uMode > 0.5) { sc *= 1.0 - smoothstep(uLod.x - uLod.z, uLod.x, d); vFade = vec2(0.0, sc > 0.01 ? 2.0 : 0.0); }
+  float sc = iA.w, wide = 1.0;
+  if (uMode > 0.5) {
+    // grass & flowers: full density out to uLod.y, then each tuft stays while its seed is under (uLod.y/d)² and the
+    // survivors widen (and grow a little) to keep the meadow's cover; all gone by uLod.x
+    float f = min(1.0, uLod.y*uLod.y/(d*d));
+    wide = min(inversesqrt(f), 3.5);
+    sc *= clamp((f - iB.z)/(0.25*f), 0.0, 1.0)*(1.0 - smoothstep(uLod.x - uLod.z, uLod.x, d));
+    vFade = vec2(0.0, sc > 0.01 ? 2.0 : 0.0);
+  }
   vN = vec3(0.0, 1.0, 0.0); vCol = vec3(0.0); vRel = rel0; vEx = vec4(0.0);
   if (vFade.y <= vFade.x + 0.01) { gl_Position = vec4(0.0, 0.0, 2.0, 1.0); return; }
   float c = cos(iB.x), s = sin(iB.x);
-  vec3 lp = aP*sc;
+  vec3 lp = aP*sc*vec3(wide, pow(wide, 0.35), wide);
   vec3 p = vec3(lp.x*c + lp.z*s, lp.y, -lp.x*s + lp.z*c);
   vec3 n = vec3(aN.x*c + aN.z*s, aN.y, -aN.x*s + aN.z*c);
   float mat = aX.z;
@@ -806,7 +813,7 @@ void main(){
   }
   function drawGrass(B, gx, gy, gz, gw) {
     gl.uniform1f(U.uMode, 1);
-    gl.uniform4f(U.uLod, GR, 0, 22, 0);
+    gl.uniform4f(U.uLod, GR, GR_FULL, 40, 0);
     gl.uniform1f(U.uSway, 0.13); gl.uniform1f(U.uStiff, 0);
     if (U.uG) gl.uniform4f(U.uG, gx, gy, gz, gw);
     for (let s = 0; s < NG; s++) drawSlot(B, s);
@@ -1269,7 +1276,7 @@ void main(){ oA = vec4(pow(clamp(vC, 0.0, 1.0), vec3(2.2)), 1.0); oN = vec4(norm
   const fpoolBuf = buffer(new Float32Array(FCAP * 8), gl.ARRAY_BUFFER, gl.DYNAMIC_DRAW);
   const ffree = [[0, FCAP]]; // free ranges [start, length], sorted by start
   let fzero = new Float32Array(8192 * 8), fFrame = 0;
-  const fstat = { tiles: 0, active: 0, instances: 0, drawn: 0, runs: 0, gen: 0, ms: 0, queue: 0 };
+  const fstat = { tiles: 0, active: 0, instances: 0, drawn: 0, runs: 0, gen: 0, ms: 0, queue: 0, tileMax: 0 };
   function falloc(n) {
     for (let q = 0; q < ffree.length; q++) {
       const r = ffree[q];
@@ -1327,6 +1334,11 @@ void main(){ oA = vec4(pow(clamp(vC, 0.0, 1.0), vec3(2.2)), 1.0); oN = vec4(norm
     for (const key of fwant) {
       if (ftiles.has(key)) { act.add(key); continue; }
       let k = Math.floor(key / 67108864), i = Math.floor(key / 8192) % 8192 - 4096, j = key % 8192 - 4096;
+      // moving away, its four children are usually still there (a superset of its plants): keep them until it's ready
+      if (k > 0) {
+        const ch = [0, 1, 2, 3].map(q => fkey(k - 1, i * 2 + (q & 1), j * 2 + (q >> 1)));
+        if (ch.every(c => ftiles.has(c))) { for (const c of ch) act.add(c); continue; }
+      }
       while (k < FF.levels - 1) { k++; i = Math.floor(i / 2); j = Math.floor(j / 2); const a = fkey(k, i, j); if (ftiles.has(a)) { act.add(a); break; } }
     }
     for (const key of factive) if (!act.has(key)) { const t = ftiles.get(key); if (t && t.live) funload(t); }
@@ -1352,7 +1364,9 @@ void main(){ oA = vec4(pow(clamp(vC, 0.0, 1.0), vec3(2.2)), 1.0); oN = vec4(norm
     while (order.length && (made === 0 || performance.now() - t0 < budgetMs)) {
       const q = order.shift(), k = fqueue[q + 1], i = fqueue[q + 2], j = fqueue[q + 3], key = fkey(k, i, j);
       if (ftiles.has(key)) continue;
+      const tg = performance.now();
       ftiles.set(key, genFarTile(k, i, j));
+      fstat.tileMax = Math.max(fstat.tileMax, performance.now() - tg);
       made++;
     }
     if (made) fresolve();
@@ -1536,15 +1550,26 @@ void main(){
   }
 
   // ───── near-camera grass & wildflowers ─────
-  const GT = 32, GC = 1.25, GNC = GT / GC, GGS = 4, GGN = GT / GGS + 1, GR = 75, GRASS_CAP = 16000;
+  // (view range, ticket 14) full density to GR_FULL, thinning and widening out to GR (it was 75 m); each tile's lists are
+  // sorted by seed, so a rebuild copies just the prefix its distance can keep
+  const GT = 32, GC = 1.25, GNC = GT / GC, GGS = 4, GGN = GT / GGS + 1, GR = 200, GR_FULL = 60, GRASS_CAP = 40000, GTR = Math.ceil((GR + 12) / GT);
   const gtiles = new Map(), ggrid = new Float64Array(GGN * GGN), gfm = new Float64Array(GGN * GGN), gpat = new Float64Array(GGN * GGN);
   const gspc = new Float64Array(GGN * GGN), gtall = new Float64Array(GGN * GGN);
   const gscratch = [];
   for (let k = 0; k < NG; k++) gscratch.push(new Float32Array(GNC * GNC * 8));
   const gcount = new Int32Array(NG);
   const GB = makeBatch(GRASS_CAP, GKINDS);
-  const gneed = { n: 0, key: new Float64Array(128), i: new Int32Array(128), j: new Int32Array(128), d: new Float32Array(128), ti: 1e9, tj: 1e9 };
+  const GNM = (2 * GTR + 1) ** 2;
+  const gneed = { n: 0, key: new Float64Array(GNM), i: new Int32Array(GNM), j: new Int32Array(GNM), d: new Float32Array(GNM), ti: 1e9, tj: 1e9 };
   const glast = { x: 1e9, y: 0, z: 0, f: [0, 0, 0], active: false, dirty: true, count: 0 };
+  function sortBySeed(src, n) { // n instances (8 floats each), ascending by seed (float 6)
+    const idx = new Int32Array(n);
+    for (let q = 0; q < n; q++) idx[q] = q;
+    idx.sort((a, b) => src[a * 8 + 6] - src[b * 8 + 6]);
+    const out = new Float32Array(n * 8);
+    for (let q = 0; q < n; q++) out.set(src.subarray(idx[q] * 8, idx[q] * 8 + 8), q * 8);
+    return out;
+  }
   function genGrassTile(ti, tj) {
     const x0 = ti * GT, z0 = tj * GT;
     let gmin = 1e9, gmax = -1e9;
@@ -1593,19 +1618,19 @@ void main(){
     }
     const lists = [];
     let n = 0;
-    for (let k = 0; k < NG; k++) if (gcount[k]) { lists.push(k, gscratch[k].slice(0, gcount[k] * 8)); n += gcount[k]; }
-    return { x0, z0, lists, n, yMin: gmin - 1, yMax: gmax + 1.2, vis: 0 };
+    for (let k = 0; k < NG; k++) if (gcount[k]) { lists.push(k, sortBySeed(gscratch[k], gcount[k])); n += gcount[k]; }
+    return { x0, z0, lists, n, yMin: gmin - 1, yMax: gmax + 1.2, vis: 0, keep: new Int32Array(lists.length / 2) };
   }
   function grassUpdate(cam, agl) {
     const cx = cam.pos[0], cy = cam.pos[1], cz = cam.pos[2];
-    glast.active = agl < 110;
+    glast.active = agl < GR + 20;
     if (!glast.active) return;
     const ti = Math.floor(cx / GT), tj = Math.floor(cz / GT);
     if (ti !== gneed.ti || tj !== gneed.tj) {
       gneed.ti = ti; gneed.tj = tj;
       const R = GR + 12;
       let n = 0;
-      for (let i = ti - 4; i <= ti + 4; i++) for (let j = tj - 4; j <= tj + 4; j++) {
+      for (let i = ti - GTR; i <= ti + GTR; i++) for (let j = tj - GTR; j <= tj + GTR; j++) {
         const dx = Math.max(i * GT - cx, 0, cx - (i + 1) * GT), dz = Math.max(j * GT - cz, 0, cz - (j + 1) * GT), d = Math.hypot(dx, dz);
         if (d < R) { needTmp.d[n] = d; needTmp.i[n] = i; needTmp.j[n] = j; needIdx[n] = n; n++; }
       }
@@ -1631,9 +1656,19 @@ void main(){
       if (!t) continue;
       t.vis = 0;
       if (!t.n || !boxVisible(t.x0, t.yMin, t.z0, t.x0 + GT, t.yMax, t.z0 + GT, cx, cy, cz, 12)) continue;
-      if (tot + t.n > GRASS_CAP) break;
-      t.vis = 1; tot += t.n;
-      for (let l = 0; l < t.lists.length; l += 2) B.n[t.lists[l]] += t.lists[l + 1].length >> 3;
+      // the seeds this tile's nearest point can keep (a margin for the camera's travel until the next rebuild)
+      const dx = Math.max(t.x0 - cx, 0, cx - t.x0 - GT), dz = Math.max(t.z0 - cz, 0, cz - t.z0 - GT), dy = Math.max(t.yMin - cy, 0, cy - t.yMax);
+      const dn = Math.max(Math.hypot(dx, dy, dz) - 10, 1), fk = Math.min(1, (GR_FULL * GR_FULL) / (dn * dn));
+      let m = 0;
+      for (let l = 0; l < t.lists.length; l += 2) {
+        const arr = t.lists[l + 1], n = arr.length >> 3;
+        let c = 0;
+        while (c < n && arr[c * 8 + 6] < fk) c++;
+        t.keep[l >> 1] = c; m += c;
+      }
+      if (tot + m > GRASS_CAP) break;
+      t.vis = 1; tot += m;
+      for (let l = 0; l < t.lists.length; l += 2) B.n[t.lists[l]] += t.keep[l >> 1];
     }
     let o = 0;
     for (let s = 0; s < NG; s++) { B.off[s] = o; B.cur[s] = o; o += B.n[s]; }
@@ -1641,11 +1676,11 @@ void main(){
     for (let q = 0; q < gneed.n; q++) {
       const t = gtiles.get(gneed.key[q]);
       if (!t || !t.vis) continue;
-      for (let l = 0; l < t.lists.length; l += 2) { const k = t.lists[l], arr = t.lists[l + 1]; B.data.set(arr, B.cur[k] * 8); B.cur[k] += arr.length >> 3; }
+      for (let l = 0; l < t.lists.length; l += 2) { const k = t.lists[l], c = t.keep[l >> 1]; B.data.set(t.lists[l + 1].subarray(0, c * 8), B.cur[k] * 8); B.cur[k] += c; }
     }
     uploadBatch(B);
     glast.count = o;
-    if (gtiles.size > 400) for (const [k, t] of gtiles) if (Math.abs(t.x0 - cx) > 300 || Math.abs(t.z0 - cz) > 300) gtiles.delete(k);
+    if (gtiles.size > 900) for (const [k, t] of gtiles) if (Math.abs(t.x0 - cx) > GR + 150 || Math.abs(t.z0 - cz) > GR + 150) gtiles.delete(k);
   }
 
   // ───── per-frame ─────
@@ -1669,7 +1704,7 @@ void main(){
     const g = ctx.g;
     gWash = g && g.live !== false ? clamp(1 - (g.agl - 1) / 9, 0, 1) * clamp((g.V || 0) / 25, 0, 1) * 0.55 : 0;
     evict(cx, cz);
-    if (FF.on) farUpdate(cx, cy, cz, fstat.instances ? 2.5 : 8);
+    if (FF.on) farUpdate(cx, cy, cz, fstat.instances ? 1.5 : 6); // ms of tile generation per frame (more while nothing is in)
     last.ms = performance.now() - t0;
   }
   function drawOpaque(ctx) {

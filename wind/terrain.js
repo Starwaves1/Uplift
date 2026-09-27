@@ -84,12 +84,42 @@ void main(){
   // stored grid, with the micro-relief); from the 8 m ring outward, where the mesh is coarser than the grid, the island's
   // far-field normal map (below), filtered by the pixel's footprint — distant ground is lit with every ridge and gully
   // the heightfield has, however coarse the mesh there. vLod: the node's LOD plus its morph (continuous across rings).
+  // The same map carries the ground's enclosure (hollow > 0, ridge < 0, at a ~31 m scale, like the tile cache's fine
+  // LODs); mip-filtered it's the enclosure of the ground smoothed to the pixel's footprint. groundHeight/groundCurv/
+  // groundNormal give the per-pixel ground for the materials: the tile cache's per-vertex vH/vCurv/vN near the camera,
+  // the far-field maps (smooth across tiles and LOD seams) where the cache's cells are coarse.
   const TFAR = `
 in float vLod; uniform sampler2D uFarN;
+float farT(){ return uHeightP.w > 0.5 ? smoothstep(1.6, 2.8, vLod) : 0.0; }  // 0 mesh near … 1 far-field maps
 vec3 groundNormal(vec3 wp, vec3 nv){
   vec2 e = texture(uFarN, (wp.xz - uHeightP.x)*uHeightP.y/uHeightP.z).rg*2.0 - 1.0;
-  float t = uHeightP.w > 0.5 ? smoothstep(1.6, 2.8, vLod) : 0.0;
-  return normalize(mix(nv, vec3(e.x, sqrt(max(1.0 - dot(e, e), 0.0)), e.y), t));
+  return normalize(mix(nv, vec3(e.x, sqrt(max(1.0 - dot(e, e), 0.0)), e.y), farT()));
+}
+float groundCurv(vec3 wp, float vc){
+  float e = texture(uFarN, (wp.xz - uHeightP.x)*uHeightP.y/uHeightP.z).b - 0.5;   // stored ×2, as ±0.5 → ±1
+  return mix(vc, e, farT());
+}
+float groundHeight(vec3 wp, float vh){
+  float fp = max(length(fwidth(wp.xz)), 1e-3);
+  float h = textureLod(uHeight, (wp.xz - uHeightP.x)*uHeightP.y/uHeightP.z, max(log2(fp*uHeightP.y), 0.0)).r;
+  return mix(vh, h, farT());
+}
+// Meadow flowers seen from afar: the near grass (flora) puts wildflowers in patches (vn at 0.045/m) whose species follow
+// broader zones (vn at 0.018/m: daisy, buttercup, poppy, cornflower); past the instanced flowers' reach (~200 m) the
+// same patches carry on as colour on the linear albedo, stronger at grazing angles where the heads stand above the grass
+vec3 meadowFlowers(vec3 col, vec3 wp, vec3 n, float dist, float meadow, float forest){
+  vec2 p = wp.xz;
+  float fp = length(fwidth(p));
+  float w = meadow*smoothstep(140.0, 220.0, dist)*clamp(1.0 - 1.8*forest, 0.0, 1.0)*smoothstep(0.78, 0.84, n.y)
+          *smoothstep(3.0, 5.0, wp.y)*(1.0 - smoothstep(560.0, 630.0, wp.y));
+  if (w < 0.005) return col;
+  float pat = mix(smoothstep(0.5, 0.78, vn(p*0.045 + vec2(3.3, 7.7))), 0.22, smoothstep(6.0, 25.0, fp)); // its mean, once a patch is under a few pixels
+  float g = vn(p*0.018 + vec2(9.1, 1.7))*0.8;   // the species threshold, jittered ±0.2 per plant: the mix of each zone
+  float p1 = clamp((0.34 - g)/0.2, 0.0, 1.0), p2 = clamp((0.5 - g)/0.2, 0.0, 1.0), p3 = clamp((0.62 - g)/0.2, 0.0, 1.0);
+  vec3 fc = toLin(vec3(0.98, 0.97, 0.93))*p1 + toLin(vec3(1.0, 0.84, 0.16))*(p2 - p1) + toLin(vec3(0.92, 0.2, 0.12))*(p3 - p2)
+          + toLin(vec3(0.46, 0.36, 0.95))*(1.0 - p3);
+  float graze = 1.0 - abs(normalize(wp - uCam).y);
+  return mix(col, fc, (pat*0.5 + 0.03)*(0.05 + 0.13*graze)*w);
 }`;
   const TFS = GLSL_COMMON + TFAR + `
 in vec3 vRel; in vec3 vN; in float vH; in float vForest; in float vVar; in float vVar2; in float vCurv; in float vDry;
@@ -240,12 +270,17 @@ void main(){
   // snow: above a snow line that drops in gullies and on slopes turned from the (midday) sun and rises on wind-scoured
   // crests. It lies on ground up to about 50° and collects in gullies a little below the line; a per-pixel noise rags
   // its edges
-  float shaded = 1.0 - clamp(dot(normalize(vN), vec3(0.31, 0.55, -0.78))*1.4, 0.0, 1.0);
+  // ── view range (ticket 14): a minimal, marked switch for the materials session to adopt — the snow's height,
+  // enclosure and normal per pixel (groundHeight/groundCurv/groundNormal), so far off the snow line follows the ground
+  // instead of the tile cache's coarse cells (square snow patches on distant peaks) ──
+  float hS = groundHeight(wp, vH), cS = groundCurv(wp, vCurv);
+  float gullyS = smoothstep(0.1, 0.32, cS), crestS = smoothstep(0.12, 0.45, -cS);
+  float shaded = 1.0 - clamp(dot(n, vec3(0.31, 0.55, -0.78))*1.4, 0.0, 1.0);
   float rag = vn(wp.xz/23.0 + vec2(3.3, 8.8)) - 0.5 + (vn(wp.xz/7.0 + vec2(1.2, 5.4)) - 0.5)*0.5*(1.0 - smoothstep(1.0, 4.0, fp));
-  float line = SNOWLINE - 170.0*gully + 130.0*crest - 170.0*shaded + (vVar - 0.5)*220.0 + vDry*300.0 + rag*70.0;
+  float line = SNOWLINE - 170.0*gullyS + 130.0*crestS - 170.0*shaded + (vVar - 0.5)*220.0 + vDry*300.0 + rag*70.0;
   float lies = smoothstep(0.42, 0.26, slope + rag*0.08);
-  float sn = smoothstep(line - 40.0, line + 50.0, vH)*lies;
-  sn = max(sn, smoothstep(0.3, 0.7, gully + rag*0.3)*smoothstep(line - 240.0, line - 90.0, vH)*lies);
+  float sn = smoothstep(line - 40.0, line + 50.0, hS)*lies;
+  sn = max(sn, smoothstep(0.3, 0.7, gullyS + rag*0.3)*smoothstep(line - 240.0, line - 90.0, hS)*lies);
   col = mix(col, vec3(0.95,0.96,0.98), sn);
   if (vH < 0.0) col = mix(vec3(0.62,0.6,0.48), vec3(0.3,0.33,0.28), smoothstep(0.0, 14.0, -vH)); // sand to silt: the water's absorption tints it
   float grass = (1.0-rk)*(1.0-sn)*(1.0-scree)*(1.0-vForest*0.8)*smoothstep(2.0, 6.0, vH);
@@ -458,6 +493,7 @@ void main(){
   }
   // scene-linear lighting: sun (grass blades scatter a little light past the terminator), sky dome, sunlit-ground bounce
   if (!mats) col = toLin(col);
+  col = meadowFlowers(col, wp, n, dist, grass, vForest); // view range: the wildflower patches as colour past ~200 m
   float gw = grass*0.15;
   float diff = clamp((dot(n, uSun) + gw)/(1.0 + gw), 0.0, 1.0);
   float casc;
@@ -590,8 +626,10 @@ void main(){
   }
   const GEN_CAPS = [gl.DEPTH_TEST, gl.CULL_FACE, gl.BLEND, gl.POLYGON_OFFSET_FILL];
   // evaluate the queued tiles (one instanced draw), leaving every piece of GL state as it was
+  // (the colour mask isn't queried: getParameter(COLOR_WRITEMASK) is a synchronous round trip to the GPU process, ~2 ms
+  // in Chrome, and tiles are generated most frames in flight. The shadow casters write no colour; everything else does.)
   function generate() {
-    const fb = gl.getParameter(gl.FRAMEBUFFER_BINDING), vp = gl.getParameter(gl.VIEWPORT), cm = gl.getParameter(gl.COLOR_WRITEMASK);
+    const fb = gl.getParameter(gl.FRAMEBUFFER_BINDING), vp = gl.getParameter(gl.VIEWPORT), cmOn = !env.shadowPass;
     const prog = gl.getParameter(gl.CURRENT_PROGRAM);
     const st = GEN_CAPS.map(c => gl.isEnabled(c));
     gl.bindFramebuffer(gl.FRAMEBUFFER, hcFbo); gl.viewport(0, 0, ATLAS, ATLAS);
@@ -603,27 +641,32 @@ void main(){
     gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, genN);
     stats.generated += genN; genN = 0;
     gl.bindFramebuffer(gl.FRAMEBUFFER, fb); gl.viewport(vp[0], vp[1], vp[2], vp[3]);
-    gl.colorMask(cm[0], cm[1], cm[2], cm[3]);
+    gl.colorMask(cmOn, cmOn, cmOn, cmOn);
     GEN_CAPS.forEach((c, i) => (st[i] ? gl.enable(c) : gl.disable(c)));
     gl.useProgram(prog);
   }
 
-  // ── far-field normals (see TFAR): the heightfield's normals at its stored resolution (central differences — the
-  // Catmull-Rom surface's own slope at each sample), with a full mip chain and anisotropic filtering. Built once on the
-  // GPU; RG8 holds the unit normal's x and z. Parked on its own texture unit ──
+  // ── far-field maps (see TFAR): the heightfield's normals at its stored resolution (central differences — the
+  // Catmull-Rom surface's own slope at each sample) and its enclosure, with a full mip chain and anisotropic filtering.
+  // Built once on the GPU. RGBA8: the unit normal's x and z; the enclosure ×2 (the tile cache's definition at a 31 m
+  // scale: how far the ground 2 cells around rises above this spot, per metre, on heights smoothed a cell's worth).
+  // Parked on its own texture unit ──
   const UNIT_FN = 19;
   if (typeof ISLAND !== 'undefined' && ISLAND) {
     const n = ISLAND.n, t = gl.createTexture(), fb = gl.createFramebuffer(), vao = gl.createVertexArray();
     gl.activeTexture(gl.TEXTURE0 + UNIT_FN); gl.bindTexture(gl.TEXTURE_2D, t);
-    gl.texStorage2D(gl.TEXTURE_2D, Math.log2(n) + 1, gl.RG8, n, n);
+    gl.texStorage2D(gl.TEXTURE_2D, Math.log2(n) + 1, gl.RGBA8, n, n);
     gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
     gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, t, 0);
     const P = program(`void main(){ vec2 p = vec2((gl_VertexID<<1)&2, gl_VertexID&2); gl_Position = vec4(p*2.0 - 1.0, 0.0, 1.0); }`,
       GLSL_COMMON + `out vec4 o;
+float hs1(vec2 uv){ return textureLod(uHeight, uv, 1.0).r; }
 void main(){
   ivec2 i = ivec2(gl_FragCoord.xy);
   vec3 nn = normalize(vec3(hmF(i - ivec2(1, 0)) - hmF(i + ivec2(1, 0)), 2.0/uHeightP.y, hmF(i - ivec2(0, 1)) - hmF(i + ivec2(0, 1))));
-  o = vec4(nn.xz*0.5 + 0.5, 0.0, 1.0);
+  vec2 uv = gl_FragCoord.xy/uHeightP.z, du = vec2(2.0/uHeightP.z, 0.0);
+  float c = hs1(uv), e = ((hs1(uv + du) + hs1(uv - du) + hs1(uv + du.yx) + hs1(uv - du.yx))*0.25 - c)*uHeightP.y*0.5;
+  o = vec4(nn.xz*0.5 + 0.5, clamp(e*2.0, -1.0, 1.0)*0.5 + 0.5, 1.0);
 }`);
     gl.disable(gl.DEPTH_TEST); gl.disable(gl.BLEND); gl.disable(gl.CULL_FACE);
     gl.viewport(0, 0, n, n); gl.useProgram(P.p); setEnv(P);

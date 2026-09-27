@@ -185,16 +185,17 @@ function islandHCross(x, z, out) {
 //    finer than the mesh can draw.
 // Each octave fades out by the LOD's minWave like the rest of the terrain, and faster: the meshes keep a fixed angle per
 // vertex (ticket 14), so fading by minWave alone kept every octave ~10 px across out to 3 km, and far slopes read as
-// combed. The fade wavelength grows as minWave^(1+FADE) past the finest mesh (tdetFadeWave): at RK 14 the 8 and 16 m
-// octaves are gone by 0.9 km and the 32 m one by 1.75 km (it was 3.5 km), and farther slopes keep the stored landform. The finest mesh (LOD 0) is a 2 m grid
-// filtered at minWave 4 m, where the two agree, so the finest geometric octave is 8 m, and JS (collision) always
-// evaluates at that filter: the same height the nearest mesh is built from. Finer relief belongs to the fragment shader: terrainDetailFrag().
+// combed. On the mesh filters (MINWAVE·2^L) the fade wavelength grows as minWave^(1+FADE) (tdetFade): at RK 14 the 8
+// and 16 m octaves are gone by 0.9 km and the 32 m one by 1.75 km (it was 3.5 km), and farther slopes keep the stored
+// landform. The finest mesh (LOD 0) is a 2 m grid filtered at minWave 4 m, where the two agree, so the finest geometric
+// octave is 8 m, and JS (collision) always evaluates at that filter: the same height the nearest mesh is built from.
+// Finer relief belongs to the fragment shader: terrainDetailFrag().
 // The coarsest octave (c0) is two stored texels, but never under 32 m: the 8192² island (7.8 m) could hold 16–32 m
 // relief, yet its slopes carry little of it, and with a 16 m top octave the gullies read as fine texture rather than
 // landform. (Once the generator's own rock structure fills that band, ticket 17, the floor can drop to 2 texels.)
 const TDET = (() => {
   const texel = ISLAND ? ISLAND.dx : 16, M = typeof window !== 'undefined' && window.ISLAND_MAPS;
-  return { MINWAVE: 4, FADE: 1.25, c0: Math.max(32, Math.pow(2, Math.round(Math.log2(texel * 2)))), e: texel, M: M || null, m: [0, 0, 0, 1], r: [0, 0, 0, 1], g: [0, 0, 0] };
+  return { MINWAVE: 4, FADE: 1.25, f: [0, 0, 0], c0: Math.max(32, Math.pow(2, Math.round(Math.log2(texel * 2)))), e: texel, M: M || null, m: [0, 0, 0, 1], r: [0, 0, 0, 1], g: [0, 0, 0] };
 })();
 // bilinear between texel centres of an RGBA8 island map (n², over the island), clamped at the edges, 0…1 → out
 function islTex(data, n, x, z, out) {
@@ -254,14 +255,21 @@ function knobOct(px, pz, ax, az, o) {
   const s = Math.max(0.35 - (v1 - v2), 0) / 0.35;
   return Math.max(v1 + s * s * 0.0875, 0);
 }
-// the wavelength (m) below which the detail fades out, for a mesh filtered at minWave (≥ MINWAVE): minWave itself on the
-// finest mesh, growing faster than the mesh coarsens with distance (see above)
-const tdetFadeWave = mw => mw * Math.pow(mw / TDET.MINWAVE, TDET.FADE);
+// the octaves' fade for a mesh filtered at minWave mw (≥ MINWAVE) → f = [the fade wavelength on the mesh filter below
+// mw (MINWAVE·2^L), on the one above, and mw's place between them 0…1]. On a mesh filter an octave c weighs ss(f, 2f, c)
+// (tdetW); between two it's linear in mw, as the CDLOD morph blends a mesh's two filters linearly, so one sample at the
+// morph's minWave (landmarks, the fragment hook) is the mesh the camera sees, not a steeper fade of its own
+function tdetFade(mw) {
+  const T = TDET, f = T.f, L = Math.floor(Math.log2(mw / T.MINWAVE));
+  f[0] = T.MINWAVE * Math.pow(2, L * (1 + T.FADE)); f[1] = f[0] * Math.pow(2, 1 + T.FADE); f[2] = mw / (T.MINWAVE * Math.pow(2, L)) - 1;
+  return f;
+}
+const tdetW = (c, f) => { const a = ss(f[0], 2 * f[0], c); return a + (ss(f[1], 2 * f[1], c) - a) * f[2]; };
 // the detail height (m) at (x, z) for a mesh filtered at minWave (m); hx = islandHCross(x, z)
 function terrainDetail(x, z, minWave, hx) {
   const T = TDET, h = hx[0];
   minWave = Math.max(minWave, T.MINWAVE);
-  const fw = tdetFadeWave(minWave), land = ss(0.5, 3.0, h);
+  const f = tdetFade(minWave), fw = f[0], land = ss(0.5, 3.0, h);
   if (fw >= T.c0 || land <= 0) return 0;
   const e = T.e, hxp = hx[1], hxm = hx[2], hzp = hx[3], hzm = hx[4];
   const gx = (hxp - hxm) / (2 * e), gz = (hzp - hzm) / (2 * e), sl = Math.sqrt(gx * gx + gz * gz);
@@ -288,10 +296,10 @@ function terrainDetail(x, z, minWave, hx) {
       const fa = fx * ux + fz * uz, px = fx - fa * ux, pz = fz - fa * uz;
       const Gx = gx + 2 * branch * sl * px, Gz = gz + 2 * branch * sl * pz, l = Math.sqrt(Gx * Gx + Gz * Gz + 1e-4);
       const tx = -Gz / l, tz = Gx / l, g = gullyOct(x / c, z / c, tx, tz, o), k = 0.4 * r * r;
-      // depth: most grooves shallow, a few deep, so the deep ones stand apart at uneven spacings rather than as a comb
+      // depth: shallow over most of the slope, deep in patches of a few grooves (g[2] averages the cells around)
       const v = g[0] + (r - g[0]) * k, dep = 0.1 + 0.9 * ss(0.06, 0.5, g[2]);
       // V-shaped gullies, rounded ribs: ~2|cos(θ/2)| − 4/π (zero mean)
-      d += ss(fw, 2 * fw, c) * amp * c * 0.35 * a * dep * (2 * Math.sqrt(Math.max(0.5 + 0.5 * v, 0) + 0.03) - 1.355);
+      d += tdetW(c, f) * amp * c * 0.35 * a * dep * (2 * Math.sqrt(Math.max(0.5 + 0.5 * v, 0) + 0.03) - 1.355);
       const fl = a * dep * (1 - k) * g[1];
       fx += fl * tx; fz += fl * tz;
       r = v; a *= o < 2 ? 0.55 : 0.8;
@@ -306,7 +314,7 @@ function terrainDetail(x, z, minWave, hx) {
     for (let o = 0; o < 6; o++) {
       const c = T.c0 * Math.pow(2, -o);
       if (c <= fw) break;
-      d += ss(fw, 2 * fw, c) * knob * c * 0.24 * a * (knobOct(x / c, z / c, -0.78, -0.625, o) - 0.123);
+      d += tdetW(c, f) * knob * c * 0.24 * a * (knobOct(x / c, z / c, -0.78, -0.625, o) - 0.123);
       a *= 0.45;
     }
   }
@@ -317,7 +325,7 @@ function terrainDetail(x, z, minWave, hx) {
     const bed = 5 * nord + 7 * med + 8 * plat + 10 * volc + 6 * alp;
     const dx = 0.03 * med + 0.01 * plat + 0.2 * alp, dz = 0.01 * med - 0.005 * plat + 0.08 * alp;
     const lx = gx + dx, lz = gz + dz, P = bed / Math.max(Math.sqrt(lx * lx + lz * lz), 1e-3);
-    const w = ss(fw * 1.5, fw * 3, P);
+    const w = tdetW(P / 1.5, f);
     if (w > 0) {
       const zl = (h + dx * x + dz * z) / bed, s = zl + 0.35 * (vn(zl * 0.43 + 3.7, 0.5) - 0.5), fl = Math.floor(s), f = s - fl;
       const thr = 0.3 + 0.4 * hash2(fl, 9173), hard = 0.35 + 0.65 * hash2(fl + 7, 331);
@@ -493,8 +501,12 @@ vec4 islandRegions(vec2 q){ return textureLod(uIslReg, (q - uHeightP.x)*uHeightP
 // ── terrain detail below the stored grid (JS twin: TDET / islTex / gullyOct / terrainDetail in core.js, which explains
 // it): gullies and rills down the fall line, ledges along the bedding, driven by the island's maps ──
 const float TDET_MINWAVE = 4.0; // the finest mesh's filter (LOD 0: a 2 m grid at minWave 2 cells)
-const float TDET_FADE = 1.25;   // the fade wavelength grows as minWave^(1 + TDET_FADE) (JS: TDET.FADE, tdetFadeWave)
-float tdetFadeWave(float mw){ return mw*pow(mw/TDET_MINWAVE, TDET_FADE); }
+const float TDET_FADE = 1.25;   // on the mesh filters the fade wavelength grows as minWave^(1 + TDET_FADE) (JS: TDET.FADE)
+vec3 tdetFade(float mw){
+  float L = floor(log2(mw/TDET_MINWAVE)), f0 = TDET_MINWAVE*exp2(L*(1.0 + TDET_FADE));
+  return vec3(f0, f0*exp2(1.0 + TDET_FADE), mw/(TDET_MINWAVE*exp2(L)) - 1.0);
+}
+float tdetW(float c, vec3 f){ float a = smoothstep(f.x, 2.0*f.x, c); return a + (smoothstep(f.y, 2.0*f.y, c) - a)*f.z; }
 float tdetC0(){ return max(32.0, exp2(round(log2(2.0/uHeightP.y)))); } // the coarsest octave (m): 2 stored texels, ≥ 32 m
 // bilinear between texel centres of an island map, clamped at the edges (texelFetch: exact, so JS matches)
 vec4 islTex(sampler2D s, vec2 q){
@@ -544,7 +556,7 @@ float knobOct(vec2 p, vec2 a, int o){
 // the detail height (m) at q for a mesh filtered at minWave (m); hc, nb from hmCross(q)
 float terrainDetail(vec2 q, float minWave, float hc, vec4 nb){
   minWave = max(minWave, TDET_MINWAVE);
-  float fw = tdetFadeWave(minWave), c0 = tdetC0(), land = smoothstep(0.5, 3.0, hc);
+  vec3 f = tdetFade(minWave); float fw = f.x, c0 = tdetC0(), land = smoothstep(0.5, 3.0, hc);
   if (fw >= c0 || land <= 0.0) return 0.0;
   float e = 1.0/uHeightP.y;
   vec2 g = vec2(nb.x - nb.y, nb.z - nb.w)/(2.0*e);
@@ -564,7 +576,7 @@ float terrainDetail(vec2 q, float minWave, float hc, vec4 nb){
       vec2 G = g + 2.0*branch*sl*(fl - dot(fl, u)*u); float l = sqrt(dot(G, G) + 1e-4);
       vec2 t = vec2(-G.y, G.x)/l; vec3 gv = gullyOct(q/c, t, o); float k = 0.4*r*r;
       float v = gv.x + (r - gv.x)*k, dep = 0.1 + 0.9*smoothstep(0.06, 0.5, gv.z);
-      d += smoothstep(fw, 2.0*fw, c)*amp*c*0.35*a*dep*(2.0*sqrt(max(0.5 + 0.5*v, 0.0) + 0.03) - 1.355);
+      d += tdetW(c, f)*amp*c*0.35*a*dep*(2.0*sqrt(max(0.5 + 0.5*v, 0.0) + 0.03) - 1.355);
       fl += a*dep*(1.0 - k)*gv.y*t;
       r = v; a *= o < 2 ? 0.55 : 0.8;
     }
@@ -575,7 +587,7 @@ float terrainDetail(vec2 q, float minWave, float hc, vec4 nb){
     for (int o = 0; o < 6; o++) {
       float c = c0*exp2(-float(o));
       if (c <= fw) break;
-      d += smoothstep(fw, 2.0*fw, c)*knob*c*0.24*a*(knobOct(q/c, vec2(-0.78, -0.625), o) - 0.123);
+      d += tdetW(c, f)*knob*c*0.24*a*(knobOct(q/c, vec2(-0.78, -0.625), o) - 0.123);
       a *= 0.45;
     }
   }
@@ -583,7 +595,7 @@ float terrainDetail(vec2 q, float minWave, float hc, vec4 nb){
   if (ledge > 0.0) {
     float bed = 5.0*nord + 7.0*med + 8.0*plat + 10.0*volc + 6.0*alp;
     vec2 dip = vec2(0.03*med + 0.01*plat + 0.2*alp, 0.01*med - 0.005*plat + 0.08*alp), lg = g + dip;
-    float P = bed/max(length(lg), 1e-3), w = smoothstep(fw*1.5, fw*3.0, P);
+    float P = bed/max(length(lg), 1e-3), w = tdetW(P/1.5, f);
     if (w > 0.0) {
       float zl = (hc + dip.x*q.x + dip.y*q.y)/bed, s = zl + 0.35*(vn(vec2(zl*0.43 + 3.7, 0.5)) - 0.5), fl = floor(s), f = s - fl;
       float thr = 0.3 + 0.4*hash2(ivec2(int(fl), 9173)), hard = 0.35 + 0.65*hash2(ivec2(int(fl) + 7, 331));
@@ -595,15 +607,13 @@ float terrainDetail(vec2 q, float minWave, float hc, vec4 nb){
   return d;
 }
 // ── sub-mesh detail, for the terrain's fragment shader (shading only, so no JS twin) ──
-// The gully octaves of terrainDetail() that the vertex grid can't carry, continued down to 1 m: rills on soil, scree
+// The gully octaves of terrainDetail() that no mesh carries (4 m and finer), continued down to 1 m: rills on soil, scree
 // and ash, as a slope to add to the surface's like a bump map. The mesh's own normal steers them: its fall line already
-// carries the coarser grooves, so the rills branch into those as the geometric octaves do. Each octave comes in where
-// the vertex heights left it out and fades as it shrinks below the pixel, so nothing shimmers and LODs hand over evenly;
-// it fades out past the finest mesh too, where terrainDetail()'s distance fade leaves those octaves out on purpose.
+// carries the coarser grooves, so the rills branch into those as the geometric octaves do. They fade as they shrink
+// below the pixel, so nothing shimmers, and out across the finest mesh's morph ring (~0.55–0.9 km), where
+// terrainDetail()'s distance fade takes the 8 and 16 m octaves away too.
 //   q: world xz; n: the interpolated vertex normal (normalised); geoWave: the minWave the vertex heights were filtered
-//   at (vGeoWave from the terrain vertex shader); fp: the pixel footprint (m); maps, regions: islandMaps(q), islandRegions(q);
-//   cMax: the largest octave to add (m): 4 for the rills alone (cheap: near the camera only), 16 to also give back, as
-//   shading, the octaves the finest mesh's outer morph ring (~0.6–0.9 km) fades out (every octave costs a 3×3-cell loop)
+//   at (vGeoWave from the terrain vertex shader); fp: the pixel footprint (m); maps, regions: islandMaps(q), islandRegions(q)
 //   → (dh/dx, dh/dz, groove −1 … rib +1). Use: n' = normalize(vec3(n.x/n.y − s.x, 1, n.z/n.y − s.y)), weighted by the
 //   ground's softness (rills cut soil, scree and ash, not bare rock or snow).
 // a cheap octave of rills for the octaves no mesh ever carries (≤ 4 m): each lattice corner lays stripes across t with
@@ -626,29 +636,28 @@ vec2 rillOct(vec2 p, vec2 t, int o){
   vec2 s = vec2(cos(th), sin(th)), r = acc/sqrt(dot(acc, acc) + 0.02);
   return vec2(s.x*r.x - s.y*r.y, s.x*r.y + s.y*r.x);
 }
-vec3 terrainDetailFrag(vec2 q, vec3 n, float geoWave, float fp, vec4 maps, vec4 regions, float cMax){
+vec3 terrainDetailFrag(vec2 q, vec3 n, float geoWave, float fp, vec4 maps, vec4 regions){
   vec2 g = -n.xz/max(n.y, 0.2);
   float sl = length(g);
   float nord = regions.x, med = regions.y, plat = regions.z, volc = regions.w, alp = clamp(1.0 - nord - med - plat - volc, 0.0, 1.0);
   float scree = maps.z, calm = (1.0 - smoothstep(0.35, 0.85, maps.y))*(1.0 - smoothstep(0.3, 0.65, maps.x));
   float gully = (0.5*nord + 0.75*med + 0.55*plat + 0.9*volc + 1.0*alp)*(1.0 - 0.5*scree);
   float branch = (0.9*nord + 0.9*med + 0.8*plat + 0.3*volc + 1.0*alp)*(1.0 - 0.8*scree);
-  float amp = gully*smoothstep(0.05, 1.0, sl)*calm*(0.4 + 0.6*smoothstep(0.3, 0.7, vn(q/170.0 + vec2(4.1, 8.3)))), geo = max(geoWave, TDET_MINWAVE), fw = tdetFadeWave(geo), near = pow(geo/fw, 4.0), c0 = tdetC0(), a = 1.0, sw = 1e-4;
+  float amp = gully*smoothstep(0.05, 1.0, sl)*calm*(0.4 + 0.6*smoothstep(0.3, 0.7, vn(q/170.0 + vec2(4.1, 8.3)))), near = 1.0 - smoothstep(TDET_MINWAVE, 2.0*TDET_MINWAVE, geoWave), c0 = tdetC0(), a = 1.0, sw = 1e-4;
   vec3 res = vec3(0.0); vec2 fl = vec2(0.0), u = g/(sl + 1e-6);
-  if (amp <= 0.0) return res;
+  if (amp <= 0.0 || near <= 0.0) return res;
   for (int o = 0; o < 8; o++) {
     float c = c0*exp2(-float(o));
     float wp = 1.0 - smoothstep(0.25*c, 0.5*c, fp);
     if (c < 0.9 || wp <= 0.0) break;
-    float wg = (1.0 - smoothstep(fw, 2.0*fw, c))*near;
-    if (wg > 0.0 && c <= cMax) {
+    if (c <= TDET_MINWAVE) {
       vec2 G = g + 2.0*branch*sl*(fl - dot(fl, u)*u); float l = sqrt(dot(G, G) + 1e-4);
-      vec2 t = vec2(-G.y, G.x)/l; vec3 gv = c > TDET_MINWAVE ? gullyOct(q/c, t, o) : vec3(rillOct(q/c, t, o), 0.5);
+      vec2 t = vec2(-G.y, G.x)/l, gv = rillOct(q/c, t, o);
       // the V's kink rounded to the pixel, so a groove's floor never flips the slope inside one pixel
-      float dep = 0.1 + 0.9*smoothstep(0.06, 0.5, gv.z), s0 = sqrt(max(0.5 + 0.5*gv.x, 0.0) + 0.03 + 22.0*(fp/c)*(fp/c)), w = wg*wp;
-      res.xy += w*amp*c*0.35*a*dep*(0.5/s0)*(6.2831853*gv.y/c)*t;
+      float s0 = sqrt(max(0.5 + 0.5*gv.x, 0.0) + 0.03 + 22.0*(fp/c)*(fp/c)), w = near*wp;
+      res.xy += w*amp*c*0.35*a*0.65*(0.5/s0)*(6.2831853*gv.y/c)*t;
       res.z += w*a*(2.0*s0 - 1.355); sw += w*a;
-      fl += a*dep*gv.y*t;
+      fl += a*0.65*gv.y*t;
     }
     a *= o < 2 ? 0.55 : 0.8;
   }
@@ -660,7 +669,7 @@ float terrainH(vec2 q, float minWave){
   float texel = 1.0/uHeightP.y;
   bool fine = minWave <= texel*1.5;
   float coarse = fine ? 0.0 : hmLod(q, log2(minWave/(texel*1.5)));
-  if (tdetFadeWave(max(minWave, TDET_MINWAVE)) < tdetC0()) {  // the detail (and, on the fine path, the height) from one 6×6 window
+  if (tdetFade(max(minWave, TDET_MINWAVE)).x < tdetC0()) {  // the detail (and, on the fine path, the height) from one 6×6 window
     float hc; vec4 nb; hmCross(q, hc, nb);
     return (fine ? hc : coarse) + terrainDetail(q, minWave, hc, nb);
   }

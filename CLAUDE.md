@@ -23,6 +23,14 @@ playable build (its worktree served on its own port, with `?fly&at=…` spectato
 feedback to that agent, and approves. No merge to main without his explicit approval of that branch. Agents keep their
 preview server running after handing back, and expect review rounds.
 
+## Environment
+
+- Run the generator from PowerShell with
+  `wsl -d Ubuntu-26.04 -e bash -c "ISLAND_WORK=…/island/work bash …/island/run.sh <script> <args>"`.
+  Plain `wsl` without `-e` lets an outer shell expand `$`.
+- RAM (31 GB, WSL ~25 GB) is the machine's limit: keep jobs under ~4–5 GB, and run one 8192² job at a time.
+- Merging: "I want to see it before it's approved to be merged." — Garrett
+
 ## Investigate before concluding
 
 The most common failure mode of Opus 5.5 is low-effort diagnosis and premature conclusions. Do the opposite. Launch

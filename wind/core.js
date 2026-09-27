@@ -630,9 +630,10 @@ const GLX = (() => {
   // texture units reserved for the atmosphere LUTs (bound once per frame by ATMOS)
   const UNIT_SKY = 15, UNIT_AP = 14;
   // Texture units are bound once and shared by every program, so each one has a single owner (two textures on one
-  // unit fail silently — the last to bind wins): 0–1 scratch, 2–3 terrain materials, 4 heights, 5–6 terrain tile
-  // cache, 7–10 water, 11 gust map, 12 cloud map, 13 shadow cascades, 14–15 atmosphere, 16–17 island maps, 18 lake
-  // mask, 19 terrain far-field normals, 20–21 tree impostors, 22 baked sky light. Take the next free one.
+  // unit fail silently — the last to bind wins): 0–1 scratch, 2–3 terrain materials (clouds use 2 as scratch; terrain
+  // rebinds 2–3 before its draw), 4 heights, 5–6 terrain tile cache, 7–10 water, 11 gust map, 12 cloud map, 13 shadow
+  // cascades, 14–15 atmosphere, 16–17 island maps, 18 lake mask, 19 terrain far-field normals, 20–21 tree impostors,
+  // 22 baked sky light. Take the next free one.
   // the island heightfield: the 16-bit steps in an R16UI texture, bound once on its own unit, with a mip pyramid of 2×2
   // means made here (8192²: 128 MB + 43 MB; an R32F copy with mips would be 358 MB). A GPU that can't take the full size
   // gets the pyramid from the first level that fits (the ground then renders coarser than it collides).

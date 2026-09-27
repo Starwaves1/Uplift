@@ -272,7 +272,7 @@ def main():
         Au, Ab = np.load(f'{WORK}/light_{a.tag}_{a.N}_b{n}.npy')
         h_np = None
     else:
-        h_np = np.asarray(h_np, np.float32)
+        h_np = np.array(h_np, np.float32)                  # a writable copy (torch won't take a read-only memmap)
         if f > 1:
             h_np = h_np.reshape(n, f, n, f).mean((1, 3), dtype=np.float64).astype(np.float32)
         t0 = time.time()

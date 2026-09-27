@@ -11,6 +11,12 @@ function hash2(x, z) {
   h ^= h >>> 16;
   return (h & 0xffffff) / 16777216;
 }
+// the same hash's 32 bits (three independent bytes for the price of one hash)
+function hash2u(x, z) {
+  let h = (Math.imul(x, 374761393) + Math.imul(z, 668265263)) | 0;
+  h = Math.imul(h ^ (h >>> 13), 1274126177);
+  return h ^ (h >>> 16);
+}
 function vn(x, z) {
   const ix = Math.floor(x), iz = Math.floor(z);
   const fx = x - ix, fz = z - iz;
@@ -144,6 +150,24 @@ function islandH(x, z) {
   return _cr(_cr(q[y0 + x0], q[y0 + x1], q[y0 + x2], q[y0 + x3], fu), _cr(q[y1 + x0], q[y1 + x1], q[y1 + x2], q[y1 + x3], fu),
     _cr(q[y2 + x0], q[y2 + x1], q[y2 + x2], q[y2 + x3], fu), _cr(q[y3 + x0], q[y3 + x1], q[y3 + x2], q[y3 + x3], fu), fv) * I.step + I.offset;
 }
+// islandH at (x, z) and one stored texel to either side in x and in z, from one 6×6 window of steps (the same Catmull-Rom
+// with the same weights, then scaled, so out[0] is exactly islandH(x, z)) → out = [h, h(x ± dx), h(z ± dx)] in metres
+const _hcr = [new Float64Array(6), new Float64Array(6), new Float64Array(6)];
+function islandHCross(x, z, out) {
+  const I = ISLAND, n = I.n, q = I.q, m = n - 1, [rm, r0, rp] = _hcr, st = I.step, of = I.offset;
+  const u = (x - I.origin) * I.inv - 0.5, v = (z - I.origin) * I.inv - 0.5;
+  const iu = Math.floor(u), iv = Math.floor(v), fu = u - iu, fv = v - iv;
+  const c0 = _cl(iu - 2, m), c1 = _cl(iu - 1, m), c2 = _cl(iu, m), c3 = _cl(iu + 1, m), c4 = _cl(iu + 2, m), c5 = _cl(iu + 3, m);
+  for (let j = 0; j < 6; j++) {
+    const y = _cl(iv - 2 + j, m) * n;
+    const a = q[y + c0], b = q[y + c1], c = q[y + c2], d = q[y + c3], e = q[y + c4], f = q[y + c5];
+    rm[j] = _cr(a, b, c, d, fu); r0[j] = _cr(b, c, d, e, fu); rp[j] = _cr(c, d, e, f, fu);
+  }
+  out[0] = _cr(r0[1], r0[2], r0[3], r0[4], fv) * st + of;
+  out[1] = _cr(rp[1], rp[2], rp[3], rp[4], fv) * st + of; out[2] = _cr(rm[1], rm[2], rm[3], rm[4], fv) * st + of;
+  out[3] = _cr(r0[2], r0[3], r0[4], r0[5], fv) * st + of; out[4] = _cr(r0[0], r0[1], r0[2], r0[3], fv) * st + of;
+  return out;
+}
 // ── terrain detail below the stored grid (JS twin of terrainDetail() in GLSL_COMMON: same numbers, same order) ──
 // The stored heights stop at one sample every ISLAND.dx metres, and Catmull-Rom between them is smooth and blobby; below
 // that the ground gets the relief real slopes have at 8–32 m, synthesised from the island's own maps (and from the rock:
@@ -187,12 +211,12 @@ function gullyOct(px, pz, tx, tz, o) {
   const ix = Math.floor(px), iz = Math.floor(pz), fx = px - ix, fz = pz - iz, so = 7919 * (o + 1);
   let sc = 0, ssn = 0, sa = 0, sw = 1e-4;
   for (let j = -1; j <= 1; j++) for (let i = -1; i <= 1; i++) {
-    const cx = ix + i, cz = iz + j;
-    const ox = i + 0.2 + 0.6 * hash2(cx, cz + so) - fx, oz = j + 0.2 + 0.6 * hash2(cx + so, cz) - fz;
+    const hh = hash2u(ix + i, iz + j + so);
+    const ox = i + 0.2 + 0.6 * ((hh & 255) / 255) - fx, oz = j + 0.2 + 0.6 * (((hh >>> 8) & 255) / 255) - fz;
     const d2 = ox * ox + oz * oz;
     if (d2 >= 1.44) continue;
     // each groove its own depth and spacing (the deeper, the wider)
-    const hm = hash2(cx + so, cz + so), fr = 6.2831853 * (1.15 - 0.3 * hm);
+    const hm = ((hh >>> 16) & 255) / 255, fr = 6.2831853 * (1.15 - 0.3 * hm);
     const k = 1 - d2 / 1.44, w = k * k * k, ph = fr * (ox * tx + oz * tz);
     sc += w * Math.cos(ph); ssn += w * Math.sin(ph); sa += w * hm * hm; sw += w;
   }
@@ -207,25 +231,25 @@ function knobOct(px, pz, ax, az, o) {
   const ix = Math.floor(px), iz = Math.floor(pz), fx = px - ix, fz = pz - iz, so = 104729 + 7919 * o;
   let u1 = 1;
   for (let j = -1; j <= 1; j++) for (let i = -1; i <= 1; i++) {
-    const cx = ix + i, cz = iz + j;
-    const ox = fx - i - 0.2 - 0.6 * hash2(cx, cz + so), oz = fz - j - 0.2 - 0.6 * hash2(cx + so, cz);
+    const hh = hash2u(ix + i, iz + j + so);
+    const ox = fx - i - 0.2 - 0.6 * ((hh & 255) / 255), oz = fz - j - 0.2 - 0.6 * (((hh >>> 8) & 255) / 255);
     let u = ox * ax + oz * az;
     const v = oz * ax - ox * az;
     u *= u > 0 ? 1.6 : 0.8;
-    const hk = hash2(cx + so, cz + so), rr = 0.45 + 0.4 * hk, d2 = (u * u + v * v * 1.4) / (rr * rr);
+    const hk = ((hh >>> 16) & 255) / 255, rr = 0.45 + 0.4 * hk, d2 = (u * u + v * v * 1.4) / (rr * rr);
     if (d2 >= 1) continue;
     const k = 1 - d2;
     u1 *= 1 - (0.35 + 0.65 * hk) * k * k;
   }
   return 1 - u1;
 }
-// the detail height (m) at (x, z) for a mesh filtered at minWave (m); h = islandH(x, z)
-function terrainDetail(x, z, minWave, h) {
-  const T = TDET;
+// the detail height (m) at (x, z) for a mesh filtered at minWave (m); hx = islandHCross(x, z)
+function terrainDetail(x, z, minWave, hx) {
+  const T = TDET, h = hx[0];
   minWave = Math.max(minWave, T.MINWAVE);
   const land = ss(0.5, 3.0, h);
   if (minWave >= T.c0 || land <= 0) return 0;
-  const e = T.e, hxp = islandH(x + e, z), hxm = islandH(x - e, z), hzp = islandH(x, z + e), hzm = islandH(x, z - e);
+  const e = T.e, hxp = hx[1], hxm = hx[2], hzp = hx[3], hzm = hx[4];
   const gx = (hxp - hxm) / (2 * e), gz = (hzp - hzm) / (2 * e), sl = Math.sqrt(gx * gx + gz * gz);
   const lap = (hxp + hxm + hzp + hzm - 4 * h) / (e * e);
   const M = T.M, m = islTex(M && M.maps, M ? M.nm : 1, x, z, T.m), r = islTex(M && M.regions, M ? M.nr : 1, x, z, T.r);
@@ -286,10 +310,12 @@ function terrainDetail(x, z, minWave, h) {
   }
   return d;
 }
+const _hx5 = new Float64Array(5);
 function terrainH(x, z, det) {
   if (!ISLAND) return terrainHProc(x, z, det);
-  const h = islandH(x, z);
-  return det >= 1 ? h + terrainDetail(x, z, TDET.MINWAVE, h) : h;
+  if (det < 1) return islandH(x, z);
+  const hx = islandHCross(x, z, _hx5);
+  return hx[0] + terrainDetail(x, z, TDET.MINWAVE, hx);
 }
 // how mountainous the country around (x, z) is, 0 lowland … 1 high mountains (smooth over kilometres)
 function terrainHigh(x, z) {
@@ -318,6 +344,7 @@ float hash2(ivec2 p){
   h = (h ^ (h >> 13u)) * 1274126177u; h = h ^ (h >> 16u);
   return float(h & 16777215u) / 16777216.0;
 }
+uint hash2u(ivec2 p){ uint h = uint(p.x)*374761393u + uint(p.y)*668265263u; h = (h ^ (h >> 13u))*1274126177u; return h ^ (h >> 16u); }
 float vn(vec2 p){
   vec2 i = floor(p), f = p - i;
   vec2 u = f*f*f*(f*(f*6.0-15.0)+10.0);
@@ -390,7 +417,7 @@ float terrainHProc(vec2 q, float minWave){
 float forestMask(vec2 p){
   return smoothstep(0.54, 0.66, vn(p*0.0021 + vec2(7.7,3.3))*0.7 + vn(p*0.009 + vec2(1.1,9.9))*0.3);
 }
-// ── the island heightfield (JS twin: terrainH/islandH/microH in core.js): 16-bit steps in an R16UI texture with its
+// ── the island heightfield (JS twin: terrainH/islandH/islandHCross in core.js): 16-bit steps in an R16UI texture with its
 // own mip pyramid, filtered by hand (integer textures don't filter). uHeightP: origin (m), 1/cell (1/m), cells, enabled;
 // uHeightQ: metres per step, offset (m). Fine detail: Catmull-Rom bicubic over 16 texels; coarser (minWave, m):
 // trilinear over the pyramid, as textureLod would ──
@@ -423,6 +450,21 @@ float hmLod(vec2 q, float lod){
   if (t > 0.0) h = mix(h, hmBilin(u, min(l + 1, int(top))), t);
   return h*uHeightQ.x + uHeightQ.y;
 }
+// hmCubic at q and one stored texel to either side in x and in z, from one 6×6 window of steps (32 fetches, not 80; the
+// same weights, then scaled, so h is exactly hmCubic(q)) → h, nb = (h(x + dx), h(x − dx), h(z + dx), h(z − dx)) in metres
+void hmCross(vec2 q, out float h, out vec4 nb){
+  vec2 u = (q - uHeightP.x)*uHeightP.y - 0.5, fi = floor(u), f = u - fi;
+  ivec2 b = ivec2(fi);
+  float rm[6], r0[6], rp[6];
+  for (int j = 0; j < 6; j++) {
+    ivec2 y = b + ivec2(0, j - 2);
+    float c1 = hmF(y + ivec2(-1, 0)), c2 = hmF(y), c3 = hmF(y + ivec2(1, 0)), c4 = hmF(y + ivec2(2, 0));
+    r0[j] = crs(c1, c2, c3, c4, f.x);
+    if (j > 0 && j < 5) { float c0 = hmF(y + ivec2(-2, 0)), c5 = hmF(y + ivec2(3, 0)); rm[j] = crs(c0, c1, c2, c3, f.x); rp[j] = crs(c2, c3, c4, c5, f.x); }
+  }
+  h = crs(r0[1], r0[2], r0[3], r0[4], f.y)*uHeightQ.x + uHeightQ.y;
+  nb = vec4(crs(rp[1], rp[2], rp[3], rp[4], f.y), crs(rm[1], rm[2], rm[3], rm[4], f.y), crs(r0[2], r0[3], r0[4], r0[5], f.y), crs(r0[0], r0[1], r0[2], r0[3], f.y))*uHeightQ.x + uHeightQ.y;
+}
 // the island's data maps: (river flow, sediment, scree, bare rock) and region weights (Nordic, Mediterranean, plateau,
 // volcano; the Alpine centre is what's left)
 uniform sampler2D uIslMaps, uIslReg;
@@ -448,11 +490,11 @@ vec3 gullyOct(vec2 p, vec2 t, int o){
   ivec2 b = ivec2(ip); int so = 7919*(o + 1);
   float sc = 0.0, sn = 0.0, sa = 0.0, sw = 1e-4;
   for (int j = -1; j <= 1; j++) for (int i = -1; i <= 1; i++) {
-    ivec2 c = b + ivec2(i, j);
-    vec2 of = vec2(float(i) + 0.2 + 0.6*hash2(c + ivec2(0, so)) - f.x, float(j) + 0.2 + 0.6*hash2(c + ivec2(so, 0)) - f.y);
+    uint hh = hash2u(b + ivec2(i, j + so));
+    vec2 of = vec2(float(i) + 0.2 + 0.6*(float(hh & 255u)/255.0) - f.x, float(j) + 0.2 + 0.6*(float((hh >> 8u) & 255u)/255.0) - f.y);
     float d2 = dot(of, of);
     if (d2 >= 1.44) continue;
-    float hm = hash2(c + ivec2(so, so)), fr = 6.2831853*(1.15 - 0.3*hm);
+    float hm = float((hh >> 16u) & 255u)/255.0, fr = 6.2831853*(1.15 - 0.3*hm);
     float k = 1.0 - d2/1.44, w = k*k*k, ph = fr*dot(of, t);
     sc += w*cos(ph); sn += w*sin(ph); sa += w*hm*hm; sw += w;
   }
@@ -465,25 +507,25 @@ float knobOct(vec2 p, vec2 a, int o){
   ivec2 b = ivec2(ip); int so = 104729 + 7919*o;
   float u1 = 1.0;
   for (int j = -1; j <= 1; j++) for (int i = -1; i <= 1; i++) {
-    ivec2 c = b + ivec2(i, j);
-    vec2 of = vec2(f.x - float(i) - 0.2 - 0.6*hash2(c + ivec2(0, so)), f.y - float(j) - 0.2 - 0.6*hash2(c + ivec2(so, 0)));
+    uint hh = hash2u(b + ivec2(i, j + so));
+    vec2 of = vec2(f.x - float(i) - 0.2 - 0.6*(float(hh & 255u)/255.0), f.y - float(j) - 0.2 - 0.6*(float((hh >> 8u) & 255u)/255.0));
     float u = of.x*a.x + of.y*a.y, v = of.y*a.x - of.x*a.y;
     u *= u > 0.0 ? 1.6 : 0.8;
-    float hk = hash2(c + ivec2(so, so)), rr = 0.45 + 0.4*hk, d2 = (u*u + v*v*1.4)/(rr*rr);
+    float hk = float((hh >> 16u) & 255u)/255.0, rr = 0.45 + 0.4*hk, d2 = (u*u + v*v*1.4)/(rr*rr);
     if (d2 >= 1.0) continue;
     float k = 1.0 - d2;
     u1 *= 1.0 - (0.35 + 0.65*hk)*k*k;
   }
   return 1.0 - u1;
 }
-// the detail height (m) at q for a mesh filtered at minWave (m); hc = hmCubic(q)
-float terrainDetail(vec2 q, float minWave, float hc){
+// the detail height (m) at q for a mesh filtered at minWave (m); hc, nb from hmCross(q)
+float terrainDetail(vec2 q, float minWave, float hc, vec4 nb){
   minWave = max(minWave, TDET_MINWAVE);
   float c0 = tdetC0(), land = smoothstep(0.5, 3.0, hc);
   if (minWave >= c0 || land <= 0.0) return 0.0;
-  float e = 1.0/uHeightP.y, hxp = hmCubic(q + vec2(e, 0.0)), hxm = hmCubic(q - vec2(e, 0.0)), hzp = hmCubic(q + vec2(0.0, e)), hzm = hmCubic(q - vec2(0.0, e));
-  vec2 g = vec2(hxp - hxm, hzp - hzm)/(2.0*e);
-  float sl = length(g), lap = (hxp + hxm + hzp + hzm - 4.0*hc)/(e*e);
+  float e = 1.0/uHeightP.y;
+  vec2 g = vec2(nb.x - nb.y, nb.z - nb.w)/(2.0*e);
+  float sl = length(g), lap = (nb.x + nb.y + nb.z + nb.w - 4.0*hc)/(e*e);
   vec4 m = islTex(uIslMaps, q), r = islTex(uIslReg, q);
   float nord = r.x, med = r.y, plat = r.z, volc = r.w, alp = clamp(1.0 - nord - med - plat - volc, 0.0, 1.0);
   float scree = m.z, calm = (1.0 - smoothstep(0.35, 0.85, m.y))*(1.0 - smoothstep(0.3, 0.65, m.x))*land;
@@ -567,12 +609,14 @@ vec3 terrainDetailFrag(vec2 q, vec3 n, float geoWave, float fp, vec4 maps, vec4 
 }
 float terrainH(vec2 q, float minWave){
   if (uHeightP.w < 0.5) return terrainHProc(q, minWave);
-  float texel = 1.0/uHeightP.y, h;
+  float texel = 1.0/uHeightP.y;
   bool fine = minWave <= texel*1.5;
-  if (fine) h = hmCubic(q);
-  else h = hmLod(q, log2(minWave/(texel*1.5)));
-  if (max(minWave, TDET_MINWAVE) < tdetC0()) h += terrainDetail(q, minWave, fine ? h : hmCubic(q));
-  return h;
+  float coarse = fine ? 0.0 : hmLod(q, log2(minWave/(texel*1.5)));
+  if (max(minWave, TDET_MINWAVE) < tdetC0()) {  // the detail (and, on the fine path, the height) from one 6×6 window
+    float hc; vec4 nb; hmCross(q, hc, nb);
+    return (fine ? hc : coarse) + terrainDetail(q, minWave, hc, nb);
+  }
+  return fine ? hmCubic(q) : coarse;
 }
 // Lighting is scene-linear HDR. Colours authored in the code are sRGB and go through toLin() before lighting.
 // uSunCol = sun irradiance/π at the camera, uAmb = sky irradiance/π on an up-facing surface,

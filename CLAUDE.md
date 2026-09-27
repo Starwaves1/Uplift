@@ -16,6 +16,12 @@ artifact (it was first published from another folder, so publishing without the 
   `island/preview/`. From Windows, call WSL via PowerShell (Git Bash mangles `/root/...` paths).
 - Test builds must stay muted (`window.WB_MUTE`): never play audio on the user's PC.
 
+## Investigate before concluding
+
+The most common failure mode of Opus 5.5 is low-effort diagnosis and premature conclusions. Do the opposite. Launch
+full investigations of bugs to understand the most efficient and simple way to solve a problem in a codebase. The first
+thing you think to do is often not the simplest and best way to do it.
+
 ## Agent skills
 
 ### Issue tracker

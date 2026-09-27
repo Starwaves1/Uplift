@@ -835,7 +835,9 @@ void main(){
   const hgrid = new Float64Array(LMAX), fgrid = new Float64Array(LMAX), cgrid = new Float64Array(LMAX);
   const agrid = new Float64Array(LMAX), vgrid = new Float64Array(LMAX), GRIDS = [hgrid, fgrid, cgrid, agrid, vgrid];
   function latVal(g, x, z) {
-    if (g === 0) return terrainH(x, z, 1);
+    // the stored surface: the lattice only screens candidates (height band, slope), and at 16 m it would alias the 8–32 m
+    // detail anyway; accepted plants take the exact terrainH (the JS detail costs ~2 µs a call, thousands a frame here)
+    if (g === 0) return terrainH(x, z, 0);
     if (g === 1) return forestMask(x, z);
     // copses: small domain-warped blobs of trees in open country
     if (g === 2) return vn(x * 0.0105 + 17.3 + (vn(x * 0.021 + 3.1, z * 0.021) - 0.5) * 1.2, z * 0.0105 + 5.9 + (vn(x * 0.021, z * 0.021 + 7.7) - 0.5) * 1.2);

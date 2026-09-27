@@ -21,14 +21,12 @@ patch on open land: its sky light is the sky irradiance × (1 + n.y)/2. So each 
 *relative to that open-ground case* — 1 on flat land, open slopes and crests; lower in valleys, gullies, hollows, at
 cliff feet.
 
-Output: WORK/light_<tag>_<N>.npy (float32, 2×N²: uniform, band), <outdir>/island_light.bin (see encode()), previews in
-island/preview/. The bake is at the heights' own resolution; the shipped map is box-filtered to 2048² (31 m): in the game
-4096² and 1024² frames differ only at the noise floor, except flying under ~100 m in steep valleys at dusk, where 1024²
-starts to blur the gully floors (4096² would cost 9.1 MB, 2048² 2.7 MB, 1024² 0.7 MB for the r5 island).
-An 8192² island takes ~3.5 min on an RX 7900 XT (64 directions × 78 steps out to 15 km), ~1.5 GB of GPU memory and
-~4 GB of host memory.
+Output: WORK/light_<tag>_<N>_b<R>.npy (float32, 2×R²: uniform, band), <outdir>/island_light.bin (see encode()),
+previews in island/preview/. The bake runs on the heights box-filtered to the stored map's own grid (2048², 31 m by
+default; see main()), so the map holds only relief it can resolve. For the r5 island: 2.4 MB, ~10 s on an RX 7900 XT
+(64 directions × 60 steps out to 15 km).
 
-usage: python bake_light.py tag N outdir [--res R] [--dirs D] [--reach M] [--tau T] [--preview] [--encode-only]
+usage: python bake_light.py tag N outdir [--res R] [--bake-res B] [--dirs D] [--reach M] [--tau T] [--preview] [--encode-only]
 """
 import argparse, math, os, struct, time, zlib
 import numpy as np
@@ -249,17 +247,27 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('tag'); ap.add_argument('N', type=int); ap.add_argument('outdir')
     ap.add_argument('--res', type=int, default=2048, help='stored map size (a divisor of N)')
+    ap.add_argument('--bake-res', type=int, default=0, help='bake on the heights box-filtered to this size (default: --res)')
     ap.add_argument('--dirs', type=int, default=64)
     ap.add_argument('--reach', type=float, default=16000.0)
     ap.add_argument('--tau', type=float, default=0.1, help="the sky model's optical depth (sets the horizon band's shape)")
     ap.add_argument('--preview', action='store_true')
-    ap.add_argument('--encode-only', action='store_true', help='re-encode WORK/light_<tag>_<N>.npy (e.g. at another --res)')
+    ap.add_argument('--encode-only', action='store_true', help='re-encode WORK/light_<tag>_<N>_b<bake res>.npy')
     a = ap.parse_args()
     h_np = np.load(f'{WORK}/h_{a.tag}_{a.N}.npy').astype(np.float32)
+    # Bake on the heights box-filtered to the stored map's own grid (31 m at 2048²): relief finer than a texel (rills,
+    # the knobs along a crest) can't be told apart in the map, and baking it at 7.8 m then averaging mixes a crest's
+    # open sky with the gully beside it — narrow crests came out as dark as the gullies, and the rills' fine horizon
+    # changes (the horizon band reacts to a degree or two) left combed, smudgy streaks down the slopes. Occlusion finer
+    # than a texel is the shader's own job (the terrain's per-pixel hollow term).
+    nb = min(a.bake_res or a.res, h_np.shape[0])
+    if nb < h_np.shape[0]:
+        f = h_np.shape[0] // nb
+        h_np = h_np.reshape(nb, f, nb, f).mean((1, 3), dtype=np.float64).astype(np.float32)
     n = h_np.shape[0]; dx = SIZE / n
     res = min(a.res, n)
     if a.encode_only:
-        Au, Ab = np.load(f'{WORK}/light_{a.tag}_{a.N}.npy')
+        Au, Ab = np.load(f'{WORK}/light_{a.tag}_{a.N}_b{n}.npy')
     else:
         t0 = time.time()
         Au, Ab, V = bake(torch.from_numpy(h_np).to(dev), dx, a.dirs, a.reach, tau=a.tau)
@@ -269,7 +277,7 @@ def main():
               f' band {Ab.min():.3f}…{Ab.max():.3f} (mean on land {Ab[land].mean():.3f}); plain sky view on land {V[land].mean():.3f}')
         del V
         Au = np.minimum(Au, 1.0); Ab = np.minimum(Ab, 1.0)
-        np.save(f'{WORK}/light_{a.tag}_{a.N}.npy', np.stack([Au, Ab]))
+        np.save(f'{WORK}/light_{a.tag}_{a.N}_b{n}.npy', np.stack([Au, Ab]))
     blob, qs = encode([Au, Ab], res)
     os.makedirs(a.outdir, exist_ok=True)
     open(os.path.join(a.outdir, 'island_light.bin'), 'wb').write(blob)

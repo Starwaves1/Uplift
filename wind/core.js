@@ -344,11 +344,12 @@ vec3 aoMultiBounce(float v, vec3 alb){
 // the factor for the sky (ambient) light at q, per colour channel: multiply the sky term by it — on the terrain after its
 // usual (1 + n.y)/2 of the open-ground model, on things standing on the ground (plants, rocks, buildings) on their
 // whole sky term. Dims and cools the ambient in valleys (the hidden horizon band is the whiter part of the sky).
-vec3 islandSkyLight(vec2 q, vec3 alb){
-  vec2 s = islandSkyVis(q);
+// (from a value islandSkyVis() already read, e.g. up front in a shader that discards before it knows its albedo)
+vec3 islandSkyLightV(vec2 s, vec3 alb){
   vec3 ev = min(uZen, uAmb);                    // the even part of the sky light; the rest is the band's
   return (ev*aoMultiBounce(s.x, alb) + (uAmb - ev)*aoMultiBounce(s.y, alb))/max(uAmb, vec3(1e-6));
 }
+vec3 islandSkyLight(vec2 q, vec3 alb){ return islandSkyLightV(islandSkyVis(q), alb); }
 // the same as one number, without the bounce (e.g. to dim a specular sky reflection)
 float islandSky(vec2 q){
   vec2 s = islandSkyVis(q);
@@ -778,7 +779,8 @@ if (GLX) {
 // switches it off (everything → 1, the lighting as it was before the bake); test builds also take ?nosky and toggle it
 // with the B key, for before/after looks. Without the file there's a 1×1 stand-in and everything is 1.
 const ISLAND_SKY = (() => {
-  const S = { unit: 19, p: new Float32Array(4), ready: false, on: true, n: 0 };
+  // unit 22: 2–21 are all taken (terrain's far-field normals hold 19); WebGL2 guarantees 32 combined units
+  const S = { unit: 22, p: new Float32Array(4), ready: false, on: true, n: 0 };
   if (!GLX) return S;
   const gl = GLX.gl, L = typeof window !== 'undefined' && window.ISLAND_LIGHT;
   const t = gl.createTexture();

@@ -727,6 +727,7 @@ void main(){
 }`, GLSL_COMMON + MESH.LIGHT + `
 in vec3 vN; in vec3 vCol; in vec3 vRel; in vec4 vEx; in vec2 vFade; in vec2 vWind; out vec4 o;
 void main(){
+  vec2 skyV = islandSkyVis(vRel.xz + uCam.xz); // [ticket 20] read before any discard: the map is mipmapped
   float b = bayer4(gl_FragCoord.xy);
   if (b < vFade.x || b >= vFade.y) discard;
   vec3 n = normalize(vN); vec3 v = normalize(vRel);
@@ -754,7 +755,7 @@ void main(){
   }
   if (uShadowPass > 0.5) { o = vec4(0.0); return; }
   gShadow = sunShadow(vRel, n);
-  gSky = islandSkyLight(vRel.xz + uCam.xz, alb); // [ticket 20] a plant in a deep valley sees less sky than one on a ridge
+  gSky = islandSkyLightV(skyV, alb); // [ticket 20] a plant in a deep valley sees less sky than one on a ridge
   vec3 col = lightMesh(alb, n, v, vEx.x, vEx.w, vEx.z);
   o = vec4(fogIt(col, vRel), 1.0);
 }`);
@@ -1471,6 +1472,7 @@ float impShadow(vec3 rel, float rh){
   return cl;
 }
 void main(){
+  vec2 skyV = islandSkyVis(vRel.xz + uCam.xz);       // [ticket 20] read before any discard: the map is mipmapped
   if (bayer4(gl_FragCoord.xy) < vLo) discard;       // the mesh LOD draws the rest of the cross-fade
   if (uShadowPass > 0.5) { if (texture(uIA, vUV0).a < 0.5) discard; o = vec4(0.0); return; }
   // a sharper mip near the meshes' handoff (the frames' blend and the mip chain soften what the mid LOD draws crisply)
@@ -1486,7 +1488,7 @@ void main(){
   if (tint > 1.5) col = mix(col, dot(col, vec3(0.35, 0.55, 0.1))*vec3(1.95, 1.5, 0.42), 0.5*fol);
   vec3 v = normalize(vRel);
   gShadow = impShadow(vRel, vRotT.w);
-  gSky = islandSkyLight(vRel.xz + uCam.xz, toLin(col)); // [ticket 20]
+  gSky = islandSkyLightV(skyV, toLin(col)); // [ticket 20]
   vec3 lit = lightMesh(toLin(col), n, v, ao, 0.0, fol*0.9);
   o = vec4(fogIt(lit, vRel), A.a);
 }`);

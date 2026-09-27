@@ -35,7 +35,7 @@ R.ready = async () => {
 R.centre = () => window.dispatchEvent(new MouseEvent('mousemove', { clientX: innerWidth / 2, clientY: innerHeight / 2 }));
 R.view = async (xk, yk, deg, agl, frames = 120) => {
   R.centre();
-  FLIGHT.spawn(xk * 1000 - 32000, yk * 1000 - 32000, deg * Math.PI / 180, agl);
+  FLIGHT.spawn(xk * 1000 + ISLAND.origin, yk * 1000 + ISLAND.origin, deg * Math.PI / 180, agl);
   FLIGHT.g.invuln = 99;
   await R.pump(frames);
   return Array.from(FLIGHT.g.pos).map(Math.round);

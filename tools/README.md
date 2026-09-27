@@ -34,7 +34,10 @@ port for the length of the run. Use a path to review your own worktree's build w
 Always load a muted `windborne-test*.html` build. Check that the build is current. In the main checkout, the only
 up-to-date test build (with the photo materials) is currently
 `windborne-test-flora,fauna,glider,landmarks,windfx.html`; `windborne-test.html` there is stale until someone runs
-`sh build-wind.sh`.
+`sh build-wind.sh`. A build older than `?fly` / `?at` / `?island` would quietly show the title flyby instead of
+your spot, so the tool checks that the page honoured them (the camera is at the spot and holds still, the island's
+`island.bin` loaded) and stops with "this page ignored …" if not. Serving a path from a worktree only has the
+tracked default island; for `--island NAME`, use the main checkout's server, which has `islands/`.
 
 ### Commands
 
@@ -75,7 +78,7 @@ Other options (`py tools/headless.py <command> -h` has everything):
 
 | option | what it does |
 | --- | --- |
-| `--settle N` | frames (1/60 s each) pumped after the steps and before a shot (default 150; bench 60) |
+| `--settle N` | frames (1/60 s each) pumped after the steps and before a shot (default 150; bench 0, after its own 60 warm-up frames) |
 | `--page` | screenshot the composited page (canvas + title/HUD DOM) instead of reading back the canvas |
 | `--size WxH` | viewport (default 1920x1080) |
 | `--no-materials` | don't wait for the photo ground materials to load |

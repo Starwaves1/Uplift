@@ -16,8 +16,9 @@ in --js steps), so every frame is a fixed 1/60 s step and shots are deterministi
 
 Common options: --url PAGE (default: the muted test build on 127.0.0.1:8765), --island NAME, --glider (fly the glider
 from the spot instead of the ?fly spectator camera), --settings '{"tod":"dusk","quality":"high"}' (written to the
-game's saved settings before it starts), --size 1920x1080, --settle 150 (frames before each shot), --out DIR (default
-shots/), --browser chrome|edge|PATH, --port N (DevTools port; default: a free one picked by the browser), --console.
+game's saved settings before it starts), --size 1920x1080, --settle 150 (frames before each shot; bench 0),
+--out DIR (default shots/), --browser chrome|edge|PATH, --port N (DevTools port; default: a free one picked by the
+browser), --console.
 Run `py tools/headless.py <command> -h` for everything.
 """
 import argparse, base64, ctypes, json, os, re, shutil, socket, struct, subprocess, sys, tempfile, threading, time
@@ -205,6 +206,25 @@ BRIDGE = r"""
              vendor: String(d ? gl.getParameter(d.UNMASKED_VENDOR_WEBGL) : gl.getParameter(gl.VENDOR)),
              timerQuery: !!gl.getExtension('EXT_disjoint_timer_query_webgl2') };
   };
+  // a build from before ?fly / ?at / ?island ignores them and shows the title flyby: fail instead of saving that
+  HB.checkUrl = async () => {
+    const q = new URLSearchParams(location.search), isl = q.get('island'), at = q.get('at'), fly = q.has('fly'), bad = [];
+    if (isl && !performance.getEntriesByType('resource').some(e => e.name.includes(`islands/${isl}/island.bin`) && e.responseStatus === 200))
+      bad.push(`?island=${isl} (islands/${isl}/island.bin not loaded)`);
+    const island = typeof ISLAND !== 'undefined' && ISLAND;
+    if (at && !island) bad.push(`?at=${at} (no island loaded)`);
+    else if (at) { // the spectator camera (?fly) or the glider starts at the spot
+      const [x, y] = at.split(',').map(Number), p = fly ? FLIGHT.cam.pos : FLIGHT.g.pos;
+      if (Math.hypot(p[0] - x * 1000 - island.origin, p[2] - y * 1000 - island.origin) > 300) bad.push(`?at=${at}`);
+    }
+    if (fly) { // the spectator camera holds still with no keys down; the title flyby's camera moves
+      const p0 = Array.from(FLIGHT.cam.pos);
+      await R.pump(2, HB.dtMs);
+      const c = FLIGHT.cam.pos;
+      if (Math.hypot(c[0] - p0[0], c[1] - p0[1], c[2] - p0[2]) > 0.01) bad.push('?fly');
+    }
+    if (bad.length) throw new Error(`this page ignored ${bad.join(', ')}: is it an old build? Rebuild it (sh build-wind.sh ...) or pick another with --url`);
+  };
   // wait for the game (and its photo ground materials), pump the loading frames; play: take flight in the glider
   HB.ready = async ({ play = false, materials = true, timeout = 60000 } = {}) => {
     const t0 = performance.now();
@@ -215,6 +235,7 @@ BRIDGE = r"""
     if (!window.WB) throw new Error('the game did not start' + (HB.errors.length ? ': ' + HB.errors.join(' | ') : ' (timeout)'));
     const tStart = performance.now();
     await R.pump(20, HB.dtMs);
+    await HB.checkUrl();
     const tFirst = performance.now();
     // (builds from before the photo materials have no TERRAIN.materials: nothing to wait for)
     while (materials && 'materials' in TERRAIN && !TERRAIN.materials && !HB.noMaterials && performance.now() - t0 < timeout) { await R.pump(3, HB.dtMs); await sleep(30); }
@@ -551,8 +572,11 @@ def check_renderer(info, allow_software):
 def load(b, args, url, js_steps=()):
     """Navigate, wait for the game, run the JS steps (saving any R.shot frames), settle. Returns the ready info."""
     b.goto(url)
-    info = b.js(f'HB.ready({{ play: {json.dumps(bool(args.glider))}, materials: {json.dumps(not args.no_materials)}, '
-                f'timeout: {int(args.timeout * 1000)} }})', timeout=args.timeout + 30)
+    try:
+        info = b.js(f'HB.ready({{ play: {json.dumps(bool(args.glider))}, materials: {json.dumps(not args.no_materials)}, '
+                    f'timeout: {int(args.timeout * 1000)} }})', timeout=args.timeout + 30)
+    except RuntimeError as e:  # the page's own message (the game didn't start, or ignored ?fly/?at/?island) is enough
+        raise SystemExit(f'{url}: ' + str(e).removeprefix('page: Error: ').split('\n    at ')[0])
     check_renderer(info, args.allow_software)
     b.loaded = True
     for step in js_steps or ():
@@ -597,6 +621,8 @@ def cmd_shot(b, args):
 
 def cmd_run(b, args):
     spots = spots_from(args)
+    if len(spots) > 1:
+        raise SystemExit('run takes one spot (use shot for several, or R.view in --js)')
     url = page_url(args.url, spots[0][1] if spots else None, args.island, args.glider)
     info = load(b, args, url, args.js)
     for e in args.expr or []:
@@ -705,7 +731,8 @@ def main():
                         '(expression or statements; await works; R.* harness and WB.* available); repeatable')
     common.add_argument('--settings', type=json.loads, help='JSON merged into the game\'s saved settings before it starts, '
                         'e.g. \'{"tod":"dusk","quality":"high"}\'')
-    common.add_argument('--settle', type=int, default=150, help='frames (1/60 s each) pumped before a shot (default 150)')
+    common.add_argument('--settle', type=int, help='frames (1/60 s each) pumped before a shot (default 150; bench: 0, '
+                        'it has its own 60 warm-up frames)')
     common.add_argument('--no-materials', action='store_true', help="don't wait for the photo ground materials")
     common.add_argument('--page', action='store_true', help='screenshot the composited page (canvas + HUD/DOM) instead of '
                         'reading back the canvas')
@@ -735,18 +762,19 @@ def main():
     p = sub.add_parser('bench', parents=[common], help='frame-time benchmark: WB.PROF GPU passes + synced wall time')
     p.add_argument('--frames', type=int, default=300, help='frames to time (default 300, after 60 warm-up frames)')
     args = ap.parse_args()
-    if args.cmd == 'bench' and '--settle' not in sys.argv:
-        args.settle = 60
+    if args.settle is None:
+        args.settle = 0 if args.cmd == 'bench' else 150
     for k in ('url', 'b_url'):
         u = getattr(args, k, None)
         if u and re.search(r'(^|/)windborne\.html(\?|$)', u):
             raise SystemExit('refusing to load windborne.html: it plays audio. Use a muted windborne-test-*.html build.')
         if u and not re.match(r'https?://', u):
+            u = u.lstrip('/')
             if not os.path.isfile(os.path.join(args.root, u.split('?', 1)[0])):
                 raise SystemExit(f'no such page: {os.path.join(args.root, u)}')
             base = getattr(args, '_served', None) or serve(args.root)
             args._served = base
-            setattr(args, k, base + u.lstrip('/'))
+            setattr(args, k, base + u)
     w, h = (int(v) for v in args.size.lower().split('x'))
     t0 = time.time()
     with Browser(args.browser, (w, h), args.port, args.console, args.settings, args.verbose) as b:

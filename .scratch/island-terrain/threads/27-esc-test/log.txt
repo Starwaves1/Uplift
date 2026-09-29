@@ -1,0 +1,146 @@
+# Ticket 27 Esc test. Simulated Chrome pointer lock (see esc-test.js header). Old = main before the fix; fixed = branch head.
+# Old-build rows after the first FAIL start from the wrong state; the rows that tell the builds apart are '#n Esc in pause menu'.
+=== old build, fp ===
+PASS  take flight (fp)                                           → play; captured   [browser: lock granted]
+PASS  #1 Esc in flight                                           → pause; uncaptured   [browser: browser took Esc down: lock released]
+FAIL  #1 Esc in pause menu                                       → pause; uncaptured   [browser: lock granted, browser took Esc up: lock released]
+PASS  #2 Esc in flight                                           → pause; uncaptured   [browser: lock granted, browser took Esc up: lock released]
+FAIL  #2 Esc in pause menu                                       → pause; uncaptured   [browser: lock granted, browser took Esc up: lock released]
+PASS  #3 Esc in flight                                           → pause; uncaptured   [browser: lock granted, browser took Esc up: lock released]
+FAIL  #3 Esc in pause menu                                       → pause; uncaptured   [browser: lock granted, browser took Esc up: lock released]
+FAIL  Esc in flight                                              → play; uncaptured, CURSOR STEERS   [browser: lock refused (Esc cooldown)]
+FAIL  Esc again at once (within 1.25 s cooldown)                 → pause; uncaptured
+FAIL    then a click                                             → pause; uncaptured
+PASS  Esc in flight                                              → pause; uncaptured   [browser: lock granted, browser took Esc up: lock released]
+FAIL  Esc after 6 s in the menu (no recent input)                → play; uncaptured, CURSOR STEERS   [browser: lock refused (needs a click or key first)]
+FAIL    then a click                                             → play; uncaptured, CURSOR STEERS
+PASS  Esc in flight                                              → pause; uncaptured
+PASS  Resume button                                              → play; captured   [browser: lock granted]
+FAIL  Esc HELD 0.9 s in flight                                   → play; uncaptured, CURSOR STEERS   [browser: browser took Esc down: lock released, lock refused (Esc cooldown), lock refused (Esc cooldown), lock refused (Esc cooldown), lock refused (Esc cooldown), lock refused (Esc cooldown)]
+FAIL  Esc HELD 0.9 s in pause menu                               → play; uncaptured, CURSOR STEERS   [browser: lock granted, browser took Esc down: lock released, lock refused (Esc cooldown), lock refused (Esc cooldown), lock refused (Esc cooldown), lock refused (Esc cooldown)]
+PASS  Esc in flight                                              → pause; uncaptured
+PASS  open Settings from the pause menu                          → pause+settings; uncaptured
+PASS  Esc with Settings open                                     → pause; uncaptured
+FAIL  Esc in pause menu                                          → pause; uncaptured   [browser: lock granted, browser took Esc up: lock released]
+11 FAILED (fp)
+done in 43.2 s (browser closed)
+=== old build, chase ===
+PASS  take flight (chase)                                        → play; captured   [browser: lock granted]
+PASS  #1 Esc in flight                                           → pause; uncaptured   [browser: browser took Esc down: lock released]
+FAIL  #1 Esc in pause menu                                       → pause; uncaptured   [browser: lock granted, browser took Esc up: lock released]
+PASS  #2 Esc in flight                                           → pause; uncaptured   [browser: lock granted, browser took Esc up: lock released]
+FAIL  #2 Esc in pause menu                                       → pause; uncaptured   [browser: lock granted, browser took Esc up: lock released]
+PASS  #3 Esc in flight                                           → pause; uncaptured   [browser: lock granted, browser took Esc up: lock released]
+FAIL  #3 Esc in pause menu                                       → pause; uncaptured   [browser: lock granted, browser took Esc up: lock released]
+FAIL  Esc in flight                                              → play; uncaptured, CURSOR STEERS   [browser: lock refused (Esc cooldown)]
+FAIL  Esc again at once (within 1.25 s cooldown)                 → pause; uncaptured
+FAIL    then a click                                             → pause; uncaptured
+PASS  Esc in flight                                              → pause; uncaptured   [browser: lock granted, browser took Esc up: lock released]
+FAIL  Esc after 6 s in the menu (no recent input)                → play; uncaptured, CURSOR STEERS   [browser: lock refused (needs a click or key first)]
+FAIL    then a click                                             → play; uncaptured, CURSOR STEERS
+PASS  Esc in flight                                              → pause; uncaptured
+PASS  Resume button                                              → play; captured   [browser: lock granted]
+FAIL  Esc HELD 0.9 s in flight                                   → play; uncaptured, CURSOR STEERS   [browser: browser took Esc down: lock released, lock refused (Esc cooldown), lock refused (Esc cooldown), lock refused (Esc cooldown), lock refused (Esc cooldown), lock refused (Esc cooldown)]
+FAIL  Esc HELD 0.9 s in pause menu                               → play; uncaptured, CURSOR STEERS   [browser: lock granted, browser took Esc down: lock released, lock refused (Esc cooldown), lock refused (Esc cooldown), lock refused (Esc cooldown), lock refused (Esc cooldown)]
+PASS  Esc in flight                                              → pause; uncaptured
+PASS  open Settings from the pause menu                          → pause+settings; uncaptured
+PASS  Esc with Settings open                                     → pause; uncaptured
+FAIL  Esc in pause menu                                          → pause; uncaptured   [browser: lock granted, browser took Esc up: lock released]
+11 FAILED (chase)
+done in 43.3 s (browser closed)
+=== old build, spec ===
+PASS  take flight (spec)                                         → play; captured   [browser: lock granted]
+PASS  #1 Esc in flight                                           → pause; uncaptured   [browser: browser took Esc down: lock released]
+FAIL  #1 Esc in pause menu                                       → pause; uncaptured   [browser: lock granted, browser took Esc up: lock released]
+PASS  #2 Esc in flight                                           → pause; uncaptured   [browser: lock granted, browser took Esc up: lock released]
+FAIL  #2 Esc in pause menu                                       → pause; uncaptured   [browser: lock granted, browser took Esc up: lock released]
+PASS  #3 Esc in flight                                           → pause; uncaptured   [browser: lock granted, browser took Esc up: lock released]
+FAIL  #3 Esc in pause menu                                       → pause; uncaptured   [browser: lock granted, browser took Esc up: lock released]
+FAIL  Esc in flight                                              → play; uncaptured   [browser: lock refused (Esc cooldown)]
+FAIL  Esc again at once (within 1.25 s cooldown)                 → pause; uncaptured
+FAIL    then a click                                             → pause; uncaptured
+PASS  Esc in flight                                              → pause; uncaptured   [browser: lock granted, browser took Esc up: lock released]
+FAIL  Esc after 6 s in the menu (no recent input)                → play; uncaptured   [browser: lock refused (needs a click or key first)]
+FAIL    then a click                                             → play; uncaptured
+PASS  Esc in flight                                              → pause; uncaptured
+PASS  Resume button                                              → play; captured   [browser: lock granted]
+FAIL  Esc HELD 0.9 s in flight                                   → play; uncaptured   [browser: browser took Esc down: lock released, lock refused (Esc cooldown), lock refused (Esc cooldown), lock refused (Esc cooldown), lock refused (Esc cooldown), lock refused (Esc cooldown)]
+FAIL  Esc HELD 0.9 s in pause menu                               → play; uncaptured   [browser: lock granted, browser took Esc down: lock released, lock refused (Esc cooldown), lock refused (Esc cooldown), lock refused (Esc cooldown), lock refused (Esc cooldown)]
+PASS  Esc in flight                                              → pause; uncaptured
+PASS  open Settings from the pause menu                          → pause+settings; uncaptured
+PASS  Esc with Settings open                                     → pause; uncaptured
+FAIL  Esc in pause menu                                          → pause; uncaptured   [browser: lock granted, browser took Esc up: lock released]
+11 FAILED (spec)
+done in 42.9 s (browser closed)
+=== fixed build, fp ===
+PASS  take flight (fp)                                           → play; captured   [browser: lock granted]
+PASS  #1 Esc in flight                                           → pause; uncaptured   [browser: browser took Esc down: lock released]
+PASS  #1 Esc in pause menu                                       → play; captured   [browser: lock granted]
+PASS  #2 Esc in flight                                           → pause; uncaptured   [browser: browser took Esc down: lock released]
+PASS  #2 Esc in pause menu                                       → play; captured   [browser: lock granted]
+PASS  #3 Esc in flight                                           → pause; uncaptured   [browser: browser took Esc down: lock released]
+PASS  #3 Esc in pause menu                                       → play; captured   [browser: lock granted]
+PASS  Esc in flight                                              → pause; uncaptured   [browser: browser took Esc down: lock released]
+PASS  Esc again at once (within 1.25 s cooldown)                 → play; uncaptured, stick held; note "Click to take the controls"   [browser: lock refused (Esc cooldown)]
+PASS    then a click                                             → play; captured   [browser: lock granted]
+PASS  Esc in flight                                              → pause; uncaptured   [browser: browser took Esc down: lock released]
+PASS  Esc after 6 s in the menu (no recent input)                → play; uncaptured, stick held; note "Click to take the controls"   [browser: lock refused (needs a click or key first)]
+PASS    then a click                                             → play; captured   [browser: lock granted]
+PASS  Esc in flight                                              → pause; uncaptured   [browser: browser took Esc down: lock released]
+PASS  Resume button                                              → play; captured   [browser: lock granted]
+PASS  Esc HELD 0.9 s in flight                                   → pause; uncaptured   [browser: browser took Esc down: lock released]
+PASS  Esc HELD 0.9 s in pause menu                               → play; captured   [browser: lock granted]
+PASS  Esc in flight                                              → pause; uncaptured   [browser: browser took Esc down: lock released]
+PASS  open Settings from the pause menu                          → pause+settings; uncaptured
+PASS  Esc with Settings open                                     → pause; uncaptured
+PASS  Esc in pause menu                                          → play; captured   [browser: lock granted]
+all passed (fp)
+done in 43.8 s (browser closed)
+=== fixed build, chase ===
+PASS  take flight (chase)                                        → play; captured   [browser: lock granted]
+PASS  #1 Esc in flight                                           → pause; uncaptured   [browser: browser took Esc down: lock released]
+PASS  #1 Esc in pause menu                                       → play; captured   [browser: lock granted]
+PASS  #2 Esc in flight                                           → pause; uncaptured   [browser: browser took Esc down: lock released]
+PASS  #2 Esc in pause menu                                       → play; captured   [browser: lock granted]
+PASS  #3 Esc in flight                                           → pause; uncaptured   [browser: browser took Esc down: lock released]
+PASS  #3 Esc in pause menu                                       → play; captured   [browser: lock granted]
+PASS  Esc in flight                                              → pause; uncaptured   [browser: browser took Esc down: lock released]
+PASS  Esc again at once (within 1.25 s cooldown)                 → play; uncaptured, stick held; note "Click to take the controls"   [browser: lock refused (Esc cooldown)]
+PASS    then a click                                             → play; captured   [browser: lock granted]
+PASS  Esc in flight                                              → pause; uncaptured   [browser: browser took Esc down: lock released]
+PASS  Esc after 6 s in the menu (no recent input)                → play; uncaptured, stick held; note "Click to take the controls"   [browser: lock refused (needs a click or key first)]
+PASS    then a click                                             → play; captured   [browser: lock granted]
+PASS  Esc in flight                                              → pause; uncaptured   [browser: browser took Esc down: lock released]
+PASS  Resume button                                              → play; captured   [browser: lock granted]
+PASS  Esc HELD 0.9 s in flight                                   → pause; uncaptured   [browser: browser took Esc down: lock released]
+PASS  Esc HELD 0.9 s in pause menu                               → play; captured   [browser: lock granted]
+PASS  Esc in flight                                              → pause; uncaptured   [browser: browser took Esc down: lock released]
+PASS  open Settings from the pause menu                          → pause+settings; uncaptured
+PASS  Esc with Settings open                                     → pause; uncaptured
+PASS  Esc in pause menu                                          → play; captured   [browser: lock granted]
+all passed (chase)
+done in 43.9 s (browser closed)
+=== fixed build, spec ===
+PASS  take flight (spec)                                         → play; captured   [browser: lock granted]
+PASS  #1 Esc in flight                                           → pause; uncaptured   [browser: browser took Esc down: lock released]
+PASS  #1 Esc in pause menu                                       → play; captured   [browser: lock granted]
+PASS  #2 Esc in flight                                           → pause; uncaptured   [browser: browser took Esc down: lock released]
+PASS  #2 Esc in pause menu                                       → play; captured   [browser: lock granted]
+PASS  #3 Esc in flight                                           → pause; uncaptured   [browser: browser took Esc down: lock released]
+PASS  #3 Esc in pause menu                                       → play; captured   [browser: lock granted]
+PASS  Esc in flight                                              → pause; uncaptured   [browser: browser took Esc down: lock released]
+PASS  Esc again at once (within 1.25 s cooldown)                 → play; uncaptured; note "Click to take the controls"   [browser: lock refused (Esc cooldown)]
+PASS    then a click                                             → play; captured   [browser: lock granted]
+PASS  Esc in flight                                              → pause; uncaptured   [browser: browser took Esc down: lock released]
+PASS  Esc after 6 s in the menu (no recent input)                → play; uncaptured; note "Click to take the controls"   [browser: lock refused (needs a click or key first)]
+PASS    then a click                                             → play; captured   [browser: lock granted]
+PASS  Esc in flight                                              → pause; uncaptured   [browser: browser took Esc down: lock released]
+PASS  Resume button                                              → play; captured   [browser: lock granted]
+PASS  Esc HELD 0.9 s in flight                                   → pause; uncaptured   [browser: browser took Esc down: lock released]
+PASS  Esc HELD 0.9 s in pause menu                               → play; captured   [browser: lock granted]
+PASS  Esc in flight                                              → pause; uncaptured   [browser: browser took Esc down: lock released]
+PASS  open Settings from the pause menu                          → pause+settings; uncaptured
+PASS  Esc with Settings open                                     → pause; uncaptured
+PASS  Esc in pause menu                                          → play; captured   [browser: lock granted]
+all passed (spec)
+done in 44.0 s (browser closed)

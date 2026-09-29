@@ -22,3 +22,6 @@ shots/
 # alternative island exports for side-by-side review (?island=NAME), and agents' git worktrees
 islands/
 .claude/worktrees/
+
+# review videos recorded by agents (kept local)
+.scratch/**/*.mp4

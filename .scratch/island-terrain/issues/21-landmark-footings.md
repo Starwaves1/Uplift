@@ -8,7 +8,7 @@ or floating.
 
 **Blocked by:** None — can start immediately.
 
-**Status:** ready-for-agent
+**Status:** closed (2026-09-27, by Garrett: not built. Nothing from branch worktree-agent-a28852eb0a8abbeac was merged; that branch holds an unreviewed attempt at 21 and 12)
 
 - [ ] Landmark frame cost near a village returns to within noise of the pre-ticket-16 cost (measured on the RX 7900 XT at 1080p)
 - [ ] No floating or buried footings, before or after terrain detail changes

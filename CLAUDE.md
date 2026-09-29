@@ -28,7 +28,7 @@ preview server running after handing back, and expect review rounds.
 - Run the generator from PowerShell with
   `wsl -d Ubuntu-26.04 -e bash -c "ISLAND_WORK=…/island/work bash …/island/run.sh <script> <args>"`.
   Plain `wsl` without `-e` lets an outer shell expand `$`.
-- RAM (31 GB, WSL ~25 GB) is the machine's limit: keep jobs under ~4–5 GB, and run one 8192² job at a time.
+- RAM (31 GB, WSL ~25 GB) is the machine's limit: one job at a time.
 - Merging: "I want to see it before it's approved to be merged." — Garrett
 
 ## Investigate before concluding

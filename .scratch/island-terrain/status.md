@@ -15,7 +15,7 @@
 - 31 topsoil and sediments (owns island_ground.bin)
 - 19 rivers and lake shores (8771)
 - 20 baked light (8772)
-- 21 footings, then 12 villages underwater and walls (8773)
+- (21 closed without building; 12 villages underwater and walls not started from main)
 - 23 clouds and weather (8774)
 - 27 pause Esc (8775)
 

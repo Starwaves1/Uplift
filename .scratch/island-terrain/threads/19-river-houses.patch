@@ -1,0 +1,142 @@
+diff --git a/wind/models/landmarks.js b/wind/models/landmarks.js
+index 71a3ba8..a26407c 100644
+--- a/wind/models/landmarks.js
++++ b/wind/models/landmarks.js
+@@ -923,6 +923,26 @@ void main(){
+   }
+   const RECT = { cottageA: [-4.9, 4.9, -3.2, 4.9], cottageB: [-4.4, 4.4, -3.2, 3.8], cottageC: [-4.4, 7.4, -3.5, 5.0] };
+   const heading = (dx, dz) => Math.atan2(dx, -dz); // FLIGHT.setHeading yaw for a world direction
++  // rivers (ticket 19) paint their water, bars and wet bank onto whatever stands in the channel, so houses and mills keep
++  // out. One that lands in a river stays in the village's layout as a ghost (reserved but not built, so the rest of the
++  // village and its random stream are exactly as before) and is rebuilt on free ground from a stream of its own
++  const RIV = typeof RIVERS !== 'undefined' && RIVERS && RIVERS.wet ? RIVERS : null;
++  function inRiver(x, z, a, s, r) {
++    if (!RIV) return false;
++    for (const lx of [r[0], (r[0] + r[1]) / 2, r[1]]) for (const lz of [r[2], (r[2] + r[3]) / 2, r[3]]) {
++      const [wx, wz] = L2W(x, z, a, s, lx, lz);
++      if (RIV.wet(wx, wz, 1, false)) return true;
++    }
++    return false;
++  }
++  function clearOfItems(cell, x, z, rad) { // nothing already laid out in the cell (walls, fences, boulders) within rad
++    const it = cell.it;
++    for (let q = 0; q < it.length; q += 9) {
++      const dx = it[q + 1] - x, dz = it[q + 3] - z, rr = rad + KINDS[it[q]].foot * it[q + 4];
++      if (dx * dx + dz * dz < rr * rr) return false;
++    }
++    return true;
++  }
+ 
+   // villages: gentle lowland valleys (10–150 m, flat), 4–10 cottages along a curving lane, 1–2 windmills, walls & fences
+   const VC = 1400;
+@@ -945,17 +965,21 @@ void main(){
+     const want = 4 + Math.floor(r() * 7), slots = [], foot = [], houses = [];
+     for (const t of [-48, -32, -16, 0, 16, 32, 48]) for (const sd of [-1, 1]) slots.push([t, sd, r() + Math.abs(t) * 0.006]);
+     slots.sort((a, b) => a[2] - b[2]);
++    const cottage = (t, sd, rr) => { // a cottage on a lane slot: position, kind, rect, yaw, scale, tint, seed
++      const tt = t + (rr() - 0.5) * 6, off = sd * (10 + rr() * 3.5) + curv * tt * tt;
++      const x = st.x + dx * tt + px * off, z = st.z + dz * tt + pz * off;
++      const v = rr(), kn = v < 0.4 ? 'cottageA' : v < 0.7 ? 'cottageB' : 'cottageC', rect = RECT[kn];
++      const a = Math.atan2(-sd * px, -sd * pz) + (rr() - 0.5) * 0.3, s = 0.92 + rr() * 0.16, tint = rr(), seed = rr();
++      return { x, z, kn, rect, a, s, tint, seed };
++    };
+     for (const [t, sd] of slots) {
+       if (houses.length >= want) break;
+-      const tt = t + (r() - 0.5) * 6, off = sd * (10 + r() * 3.5) + curv * tt * tt;
+-      const x = st.x + dx * tt + px * off, z = st.z + dz * tt + pz * off;
+-      const v = r(), kn = v < 0.4 ? 'cottageA' : v < 0.7 ? 'cottageB' : 'cottageC', rect = RECT[kn];
+-      const a = Math.atan2(-sd * px, -sd * pz) + (r() - 0.5) * 0.3, s = 0.92 + r() * 0.16, tint = r(), seed = r();
++      const { x, z, kn, rect, a, s, tint, seed } = cottage(t, sd, r);
+       if (forestMask(x, z) > 0.5 || blocked(x, z, foot, 1.5)) continue;
+       const [lo, hi] = footprint(x, z, a, s, rect);
+       if (lo < 1.2 || hi - lo > 2.6) continue;
+-      add(cell, kn, x, hi - 0.15, z, s, a, tint, seed);
+-      const f = { x, z, a, s, rect };
++      const f = { x, z, a, s, rect, gone: inRiver(x, z, a, s, rect) };
++      if (!f.gone) add(cell, kn, x, hi - 0.15, z, s, a, tint, seed);
+       foot.push(f); houses.push(f);
+     }
+     if (!houses.length) return;
+@@ -974,15 +998,17 @@ void main(){
+       const a = WIND_YAW + (r() - 0.5) * 0.1, s = 0.95 + r() * 0.2, kn = r() < 0.5 ? 'millT' : 'millS';
+       const [lo, hi] = footprint(best.x, best.z, a, s, [-3.6, 3.6, -3.6, 3.6]);
+       if (hi - lo > 3.2) continue;
+-      best.y = hi - 0.2; best.type = kn; best.yaw = a;
+-      add(cell, kn, best.x, best.y, best.z, s, a, r(), r(), r() * TAU);
++      best.y = hi - 0.2; best.type = kn; best.yaw = a; best.gone = inRiver(best.x, best.z, a, s, [-3.6, 3.6, -3.6, 3.6]);
++      const tint = r(), seed = r(), ph = r() * TAU;
++      if (!best.gone) add(cell, kn, best.x, best.y, best.z, s, a, tint, seed, ph);
+       mills.push(best); foot.push({ x: best.x, z: best.z, a, s, rect: [-4.8, 4.8, -8, 5.8] });
+     }
++    const scrap = { it: [] }; // (a ghost's garden is still laid out, to keep the stream, but thrown away)
+     for (const f of houses) { // gardens behind the cottages
+       if (r() > 0.65) continue;
+       const gw = f.rect[1] * 0.8 + 1, gd = 6 + r() * 6, kn = r() < 0.4 ? 'fence' : 'wall', z0 = f.rect[2] - 0.2;
+       const loc = [[-gw, z0], [-gw, z0 - gd], [gw, z0 - gd], [gw, z0]];
+-      polyline(cell, loc.map(p => L2W(f.x, f.z, f.a, f.s, p[0], p[1])), kn, foot.filter(q => q !== f), r);
++      polyline(f.gone ? scrap : cell, loc.map(p => L2W(f.x, f.z, f.a, f.s, p[0], p[1])), kn, foot.filter(q => q !== f), r);
+     }
+     const nf = 2 + Math.floor(r() * 3);
+     for (let q = 0; q < nf; q++) { // field boundaries wandering out from the village
+@@ -996,8 +1022,42 @@ void main(){
+       const ang = r() * TAU, d = 50 + r() * 90, x = st.x + Math.cos(ang) * d, z = st.z + Math.sin(ang) * d, h = H(x, z), s = 0.5 + r() * 0.7;
+       if (h > 1 && !blocked(x, z, foot, 3)) add(cell, 'r' + Math.floor(r() * 4), x, h - 0.2 * s, z, s, r() * TAU, r(), r());
+     }
+-    cell.sites.push({ kind: 'village', x: st.x, y: st.y, z: st.z, houses: houses.length, mills: mills.length });
+-    for (const m of mills) cell.sites.push({ kind: 'windmill', type: m.type, x: m.x, y: m.y, z: m.z, heading: heading(-Math.sin(m.yaw), -Math.cos(m.yaw)) });
++    // rebuild the ghosts on free, dry ground: cottages on the lane's other slots, then mills (no gardens for these)
++    const lostH = houses.filter(f => f.gone).length, lostM = mills.filter(m => m.gone).length;
++    if (lostH || lostM) {
++      const r2 = rng(i, j, 113);
++      let need = lostH;
++      for (const [t, sd] of slots) {
++        if (!need) break;
++        const { x, z, kn, rect, a, s, tint, seed } = cottage(t, sd, r2);
++        if (forestMask(x, z) > 0.5 || blocked(x, z, foot, 1.5)) continue;
++        const [lo, hi] = footprint(x, z, a, s, rect);
++        if (lo < 1.2 || hi - lo > 2.6 || inRiver(x, z, a, s, rect)) continue;
++        if (!clearOfItems(cell, x, z, s * Math.hypot(rect[1] - rect[0], rect[3] - rect[2]) / 2)) continue;
++        add(cell, kn, x, hi - 0.15, z, s, a, tint, seed);
++        const f = { x, z, a, s, rect };
++        foot.push(f); houses.push(f); need--;
++      }
++      const MR = [-3.6, 3.6, -3.6, 3.6];
++      for (let m = 0; m < lostM; m++) {
++        const a = WIND_YAW + (r2() - 0.5) * 0.1, s = 0.95 + r2() * 0.2, kn = r2() < 0.5 ? 'millT' : 'millS';
++        let best = null;
++        for (let t = 0; t < 16; t++) {
++          const ang = r2() * TAU, d = 55 + r2() * 60, x = st.x + Math.cos(ang) * d, z = st.z + Math.sin(ang) * d, h = H(x, z);
++          if (h < 2 || forestMask(x, z) > 0.45 || blocked(x, z, foot, 9) || !clearOfItems(cell, x, z, 6)) continue;
++          if (mills.some(q => !q.gone && Math.hypot(q.x - x, q.z - z) < 45)) continue;
++          terrainN(x, z, N3); if (N3[1] < 0.93) continue;
++          const [lo, hi] = footprint(x, z, a, s, MR);
++          if (hi - lo > 3.2 || inRiver(x, z, a, s, MR)) continue;
++          if (!best || h > best.h) best = { x, z, h, y: hi - 0.2, type: kn, yaw: a };
++        }
++        if (!best) continue;
++        add(cell, kn, best.x, best.y, best.z, s, a, r2(), r2(), r2() * TAU);
++        mills.push(best); foot.push({ x: best.x, z: best.z, a, s, rect: [-4.8, 4.8, -8, 5.8] });
++      }
++    }
++    cell.sites.push({ kind: 'village', x: st.x, y: st.y, z: st.z, houses: houses.filter(f => !f.gone).length, mills: mills.filter(m => !m.gone).length });
++    for (const m of mills) if (!m.gone) cell.sites.push({ kind: 'windmill', type: m.type, x: m.x, y: m.y, z: m.z, heading: heading(-Math.sin(m.yaw), -Math.cos(m.yaw)) });
+   }
+ 
+   // ruins on ridges and hilltops: a grand arch, a broken arch, or an aqueduct line; plus columns and rubble
+diff --git a/wind/rivers.js b/wind/rivers.js
+index 55f511d..4a92d86 100644
+--- a/wind/rivers.js
++++ b/wind/rivers.js
+@@ -407,9 +407,9 @@ const RIVERS = (() => {
+   const LM = typeof window !== 'undefined' && window.ISLAND_MAPS;
+   const lakeLevel = new Float32Array(256).fill(-1e9);
+   if (LM && LM.lakes) for (const lk of LM.lakes) lakeLevel[lk.id] = lk.level;
+-  // true where (x, z) lies within pad metres of a channel's water or its wet bank, or under a lake
+-  function wet(x, z, pad = 0) {
+-    if (LM && LM.lakeMask) {
++  // true where (x, z) lies within pad metres of a channel's water or its wet bank, or (unless lakes is false) under a lake
++  function wet(x, z, pad = 0, lakes = true) {
++    if (lakes && LM && LM.lakeMask) {
+       const nl = LM.nl, i = Math.floor((x - ISLAND.origin) / ISLAND.size * nl), j = Math.floor((z - ISLAND.origin) / ISLAND.size * nl);
+       if (i >= 0 && j >= 0 && i < nl && j < nl) { const id = LM.lakeMask[j * nl + i]; if (id && terrainH(x, z, 1) < lakeLevel[id] + 0.3 + pad * 0.15) return true; }
+     }

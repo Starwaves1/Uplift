@@ -206,3 +206,26 @@ The shore now has a thin pale rim of washed stones and a subtle wet margin, and 
 
 [Request interrupted by user for tool use]
 
+
+## Regression fix, 2026-09-29
+
+**Not applied.** The river check moves more than a handful of landmarks, so the code is unchanged. The branch is still
+at 1ceda87 with a clean tree, and the 8771 build matches it again. Details and the proposed change are in
+`issues/12-rehome-landmarks.md` (comment of 2026-09-29).
+- Cause: `genVillage` in `wind/models/landmarks.js` never checks rivers. `RIVERS` is built synchronously before
+  `LANDMARKS`, so `RIVERS.wet()` is usable at placement time.
+- Tried: in `genVillage`, a house or mill standing in a river becomes a "ghost". It keeps its random draws, so the rest of
+  the village is unchanged, and it is rebuilt on dry ground from a separate stream (`rng(i, j, 113)`). `RIVERS.wet` got a
+  rivers-only flag. Measured: 472 of 485 landmark cells byte-identical. 13 villages change: 36 houses and 5 mills
+  removed, 22 houses and 5 mills rebuilt, 231 garden wall/fence segments dropped. The lake-16 village (cell -16,5 at
+  10.24,40.09) goes from 9 to 5 houses. The others are at 10.41,49.74; 11.56,29.99; 13.36,35.78; 15.74,34.52;
+  17.35,34.37; 19.77,33.73; 38.25,33.90; 39.58,23.91; 41.19,19.98; 42.69,25.31; 43.50,45.23; 55.34,11.92. Even the
+  strictest test (footprint over the water itself) hits 20 houses and 3 mills in 11 villages.
+- Patch, ready to apply to 1ceda87 if Garrett accepts that count:
+  `C:\Users\garre\Documents\code\uplift\.scratch\island-terrain\threads\19-river-houses.patch`.
+- Before/after images (A = HEAD 1ceda87, B = with the patch), in
+  `C:\Users\garre\Documents\code\uplift\.claude\worktrees\agent-aa9a1c41975ab1fca\shots\`: `sbs_rfix_l16v.jpg` (bookmark
+  10.11,40.19,0,110: the two houses in the river are cleared), `sbs_rfix_l16j.jpg` (join 10.11,40.04,0,18),
+  `sbs_rfix_v1462.jpg` (village 13.36,35.78), `sbs_rfix_v1512.jpg` (village 15.74,34.52), `sbs_rfix_vn1.jpg` (lake
+  village 31.3,40.9: identical). Full frames are in `rfix_<name>_a.png` / `_b.png`.
+- Also found (ticket 12, untouched): 68 houses and 10 mills in 11 villages stand inside lakes, most villages wholly drowned.
